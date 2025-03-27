@@ -1,0 +1,26 @@
+{
+  "name": "rise-api",
+  "version": "0.1.0",
+  "description": "API for elevator-robot interaction using CANopen protocol",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "simulate": "node src/index.js",
+    "test": "jest"
+  },
+  "keywords": [
+    "elevator",
+    "robot",
+    "CANopen",
+    "API",
+    "simulation"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "events": "^3.3.0"
+  },
+  "devDependencies": {
+    "jest": "^29.5.0"
+  }
+} 
