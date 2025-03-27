@@ -84,6 +84,24 @@ class Simulator {
       if (this.time % 10000 === 0) {
         process.stdout.write('\n');
       }
+      
+      // Every minute, log detailed statistics
+      if (this.time % 60000 === 0) {
+        const minutes = this.time / 60000;
+        console.log(`\n=== Simulation Progress: ${minutes} minutes ===`);
+        
+        // Log cleaning progress
+        this.robots.forEach((robot, i) => {
+          if (robot.config.type === 'cleaner' && robot.visitedFloors) {
+            console.log(`Robot ${i+1} has cleaned ${robot.visitedFloors.size} floors so far`);
+          }
+        });
+        
+        // Log elevator statistics
+        this.elevators.forEach((elevator, i) => {
+          console.log(`Elevator ${i+1} has handled ${elevator.totalRequests || 0} requests (${elevator.botRequests || 0} from bots, ${elevator.tenantRequests || 0} from tenants)`);
+        });
+      }
     }
     
     // Schedule next tick
@@ -116,26 +134,35 @@ class Simulator {
   // Run a test scenario
   runScenario(scenario) {
     console.log(`Running scenario: ${scenario.name}`);
+    this.running = true;
+    this.timeouts = [];
+    this.intervals = [];
     
-    this.start();
-    
-    // Execute scenario steps
+    // Run each step at its scheduled time
     scenario.steps.forEach(step => {
-      setTimeout(() => {
+      const timeoutId = setTimeout(() => {
+        if (!this.running) return;
+        
         console.log(`Executing step: ${step.description}`);
         step.action(this);
       }, step.time / this.config.simulationSpeed);
+      
+      this.timeouts.push(timeoutId);
     });
     
-    // End scenario
-    setTimeout(() => {
-      this.stop();
-      console.log(`Scenario ${scenario.name} completed`);
+    // Schedule scenario completion
+    const completionTimeoutId = setTimeout(() => {
+      console.log(`\nSimulation stopped`);
+      console.log(`Scenario ${scenario.name} completed\n`);
+      
+      this.stopSimulation();
       
       if (scenario.onComplete) {
         scenario.onComplete(this);
       }
     }, scenario.duration / this.config.simulationSpeed);
+    
+    this.timeouts.push(completionTimeoutId);
   }
   
   // Get simulation results
@@ -148,6 +175,22 @@ class Simulator {
         robots: this.robots.map(r => r.getState())
       }
     };
+  }
+  
+  stopSimulation() {
+    this.running = false;
+    
+    // Clear all pending timeouts
+    if (this.timeouts) {
+      this.timeouts.forEach(timeoutId => clearTimeout(timeoutId));
+    }
+    
+    // Clear all pending intervals
+    if (this.intervals) {
+      this.intervals.forEach(intervalId => clearInterval(intervalId));
+    }
+    
+    console.log('\n========== SIMULATION ENDED ==========\n');
   }
 }
 

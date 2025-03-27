@@ -96,11 +96,21 @@ class VirtualElevator {
       throw new Error(`Invalid floor number: ${floorNumber}`);
     }
 
-    // Track statistics if we're tracking by requester type
-    if (this.totalRequests !== undefined && requesterType) {
+    console.log(`Elevator ${this.config.id} received request for floor ${floorNumber} from ${requesterType || 'unknown'}`);
+
+    // Track statistics
+    if (requesterType) {
+      // Initialize counters if they don't exist
+      if (this.totalRequests === undefined) {
+        this.totalRequests = 0;
+        this.botRequests = 0;
+        this.tenantRequests = 0;
+      }
+      
       this.totalRequests++;
       if (requesterType === 'bot') {
         this.botRequests++;
+        console.log(`Elevator ${this.config.id} bot request count: ${this.botRequests}`);
       } else if (requesterType === 'tenant') {
         this.tenantRequests++;
       }
@@ -109,102 +119,163 @@ class VirtualElevator {
     this.state.floorRequests.add(floorNumber);
     this.updateTargetFloor();
     
+    // Track bot requests with timestamps for priority handling
+    if (requesterType === 'bot') {
+      if (!this.pendingBotRequests) {
+        this.pendingBotRequests = [];
+      }
+      
+      this.pendingBotRequests.push({
+        floor: floorNumber,
+        timestamp: Date.now()
+      });
+      
+      console.log(`Added bot request for floor ${floorNumber} to priority queue`);
+    }
+    
     return true;
   }
 
   updateTargetFloor() {
-    if (this.state.floorRequests.size === 0 || this.state.inMotion) {
+    // If already moving, don't change target
+    if (this.state.inMotion) {
       return;
     }
-
-    // Simple algorithm: take the next request in the current direction
-    // or change direction if no requests in current direction
+    
+    // If no requests, nothing to do
+    if (this.state.floorRequests.size === 0) {
+      this.state.targetFloor = null;
+      return;
+    }
+    
+    // ALWAYS check for bot requests first, regardless of wait time
+    if (this.pendingBotRequests && this.pendingBotRequests.length > 0) {
+      // Always prioritize the first bot request
+      const botRequest = this.pendingBotRequests[0];
+      console.log(`Prioritizing bot request for floor ${botRequest.floor}`);
+      
+      this.state.targetFloor = botRequest.floor;
+      this.moveToTargetFloor();
+      return;
+    }
+    
+    // Convert set to array for easier processing
     const requests = Array.from(this.state.floorRequests);
     
-    if (this.state.direction === 'STATIONARY') {
-      // If stationary, choose closest request
-      const closest = requests.reduce((prev, curr) => 
-        Math.abs(curr - this.state.currentFloor) < Math.abs(prev - this.state.currentFloor) 
-          ? curr 
-          : prev
-      );
+    // If we're already at one of the requested floors, prioritize that
+    if (requests.includes(this.state.currentFloor)) {
+      this.state.targetFloor = this.state.currentFloor;
       
-      this.state.targetFloor = closest;
-      this.state.direction = closest > this.state.currentFloor ? 'UP' : 
-                            closest < this.state.currentFloor ? 'DOWN' : 'STATIONARY';
-    } else {
-      // Continue in current direction if possible
-      const nextInDirection = this.state.direction === 'UP' 
-        ? requests.filter(f => f > this.state.currentFloor).sort((a, b) => a - b)[0]
-        : requests.filter(f => f < this.state.currentFloor).sort((a, b) => b - a)[0];
-      
-      if (nextInDirection) {
-        this.state.targetFloor = nextInDirection;
-      } else {
-        // Change direction if no requests in current direction
-        const oppositeDirection = requests.filter(f => 
-          this.state.direction === 'UP' 
-            ? f < this.state.currentFloor 
-            : f > this.state.currentFloor
-        );
-        
-        if (oppositeDirection.length > 0) {
-          this.state.direction = this.state.direction === 'UP' ? 'DOWN' : 'UP';
-          this.state.targetFloor = this.state.direction === 'UP' 
-            ? Math.min(...oppositeDirection)
-            : Math.max(...oppositeDirection);
-        } else {
-          this.state.direction = 'STATIONARY';
-          this.state.targetFloor = null;
-        }
+      // If door is closed, open it
+      if (this.state.doorState === 'CLOSED') {
+        this.openDoor();
       }
-    }
-
-    // Start moving if we have a target
-    if (this.state.targetFloor !== null && this.state.doorState === 'CLOSED') {
-      this.startMoving();
-    }
-  }
-
-  startMoving() {
-    if (this.state.targetFloor === this.state.currentFloor) {
-      this.arriveAtFloor();
       return;
     }
+    
+    // Find the closest floor in the direction we're already moving
+    let closestFloor = null;
+    let minDistance = Infinity;
+    
+    for (const floor of requests) {
+      const distance = Math.abs(floor - this.state.currentFloor);
+      
+      // If this is a new closest floor, or it's the same distance but in our current direction
+      if (distance < minDistance || 
+          (distance === minDistance && 
+           ((this.state.direction === 'UP' && floor > this.state.currentFloor) || 
+            (this.state.direction === 'DOWN' && floor < this.state.currentFloor)))) {
+        closestFloor = floor;
+        minDistance = distance;
+      }
+    }
+    
+    this.state.targetFloor = closestFloor;
+    this.moveToTargetFloor();
+  }
 
+  moveToTargetFloor() {
+    if (this.state.targetFloor === null || this.state.inMotion) {
+      return;
+    }
+    
+    // If already at target floor, open door
+    if (this.state.currentFloor === this.state.targetFloor) {
+      if (this.state.doorState === 'CLOSED') {
+        this.openDoor();
+      }
+      return;
+    }
+    
+    // Set direction
+    if (this.state.targetFloor > this.state.currentFloor) {
+      this.state.direction = 'UP';
+    } else {
+      this.state.direction = 'DOWN';
+    }
+    
+    // Start moving
     this.state.inMotion = true;
+    
+    // Update object dictionary
+    this.objectDictionary[0x6000].value |= 0x4; // Set in motion bit
+    if (this.state.direction === 'UP') {
+      this.objectDictionary[0x6000].value |= 0x20; // Set direction up bit
+      this.objectDictionary[0x6000].value &= ~0x40; // Clear direction down bit
+    } else {
+      this.objectDictionary[0x6000].value |= 0x40; // Set direction down bit
+      this.objectDictionary[0x6000].value &= ~0x20; // Clear direction up bit
+    }
+    
+    // Notify listeners
     this.notifyListeners('directionChanged', this.state.direction);
     
-    // Calculate travel time
+    // Calculate travel time based on number of floors to travel
     const floorsToTravel = Math.abs(this.state.targetFloor - this.state.currentFloor);
     const travelTime = floorsToTravel * this.config.floorTravelTime;
     
-    // Update object dictionary
-    this.objectDictionary[0x6000].value |= 0x4; // Set in-motion bit
+    console.log(`Elevator ${this.config.id} moving ${this.state.direction} from floor ${this.state.currentFloor} to ${this.state.targetFloor}`);
     
-    // Simulate movement
+    // Clear any existing movement timer
+    if (this.movementTimer) {
+      clearTimeout(this.movementTimer);
+    }
+    
+    // Set timer for arrival
     this.movementTimer = setTimeout(() => {
+      // Arrive at target floor
       this.state.currentFloor = this.state.targetFloor;
+      this.state.inMotion = false;
+      this.state.direction = 'STATIONARY';
+      
+      // Update object dictionary
       this.objectDictionary[0x6001].value = this.state.currentFloor;
-      this.arriveAtFloor();
+      this.objectDictionary[0x6000].value &= ~0x4; // Clear in motion bit
+      this.objectDictionary[0x6000].value &= ~0x20; // Clear direction up bit
+      this.objectDictionary[0x6000].value &= ~0x40; // Clear direction down bit
+      
+      // Remove this floor from requests
+      this.state.floorRequests.delete(this.state.currentFloor);
+      
+      // Remove from pending bot requests
+      if (this.pendingBotRequests) {
+        this.pendingBotRequests = this.pendingBotRequests.filter(req => req.floor !== this.state.currentFloor);
+      }
+      
+      // Notify listeners
+      this.notifyListeners('floorChanged', this.state.currentFloor);
+      this.notifyListeners('directionChanged', this.state.direction);
+      
+      console.log(`Elevator ${this.config.id} arrived at floor ${this.state.currentFloor}`);
+      
+      // Open door immediately
+      this.openDoor();
+      
+      // Check for more requests after a delay
+      setTimeout(() => {
+        this.updateTargetFloor();
+      }, this.config.doorOpenTime + 1000);
     }, travelTime);
-  }
-
-  arriveAtFloor() {
-    this.state.inMotion = false;
-    this.state.floorRequests.delete(this.state.currentFloor);
-    this.objectDictionary[0x6000].value &= ~0x4; // Clear in-motion bit
-    
-    this.notifyListeners('floorChanged', this.state.currentFloor);
-    
-    // Open door on arrival
-    this.openDoor();
-    
-    // Check for more requests after door cycle completes
-    this.doorTimer = setTimeout(() => {
-      this.closeDoor();
-      setTimeout(() => this.updateTargetFloor(), 1000);
-    }, this.config.doorOpenTime);
   }
 
   openDoor() {

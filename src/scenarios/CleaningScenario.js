@@ -12,8 +12,8 @@ class CleaningScenario {
       elevators: 1,
       cleaningBots: 2,
       tenants: 5,
-      cleaningTimePerFloor: 20 * 60 * 1000, // 20 minutes in milliseconds
-      simulationDuration: 2 * 60 * 60 * 1000, // 2 hours in milliseconds
+      cleaningTimePerFloor: 2 * 60 * 1000, // 2 minutes in milliseconds (for faster simulation)
+      simulationDuration: 1 * 60 * 60 * 1000, // 1 hour in milliseconds
       tenantActivityLevel: 0.3, // 0-1, how often tenants use the elevator
       ...config
     };
@@ -28,10 +28,12 @@ class CleaningScenario {
     this.onComplete = (simulator) => {
       console.log('\n=== Cleaning Scenario Completed ===');
       
-      // Calculate statistics
+      // Calculate statistics - ensure we're accessing the correct data
       const cleanedFloors = new Set();
+      
       simulator.robots.forEach(robot => {
-        if (robot.config.type === 'cleaner') {
+        if (robot.config.type === 'cleaner' && robot.visitedFloors) {
+          console.log(`Robot ${robot.config.name} visited floors: ${Array.from(robot.visitedFloors).join(', ')}`);
           robot.visitedFloors.forEach(floor => cleanedFloors.add(floor));
         }
       });
@@ -68,6 +70,12 @@ class CleaningScenario {
         const state = robot.getState();
         console.log(`  Robot ${i+1} (${robot.config.type}): Floor ${state.currentFloor}, Status: ${state.status}`);
       });
+      
+      // Force process to exit after a short delay
+      setTimeout(() => {
+        console.log("\n========== SIMULATION COMPLETE ==========");
+        process.exit(0); // Force exit to prevent any lingering timeouts
+      }, 100);
     };
   }
   
@@ -118,17 +126,7 @@ class CleaningScenario {
           elevator.botRequests = 0;
           elevator.tenantRequests = 0;
           
-          // Override requestFloor to track statistics
-          const originalRequestFloor = elevator.requestFloor.bind(elevator);
-          elevator.requestFloor = function(floorNumber, requesterType) {
-            this.totalRequests++;
-            if (requesterType === 'bot') {
-              this.botRequests++;
-            } else if (requesterType === 'tenant') {
-              this.tenantRequests++;
-            }
-            return originalRequestFloor(floorNumber);
-          };
+          // Don't override the requestFloor method - it's already handling tracking
         });
       }
     });
@@ -138,14 +136,28 @@ class CleaningScenario {
   
   startCleaningCycle(robot, startFloor, simulator) {
     // Get a reference to the elevator for statistics
-    const elevator = simulator.elevators[0];
+    const elevatorIndex = robot.config.elevatorIndex || 0;
+    const elevator = simulator.elevators[elevatorIndex];
+    
+    console.log(`Starting cleaning cycle for ${robot.config.name} using elevator ${elevatorIndex+1}`);
+    
+    // Initialize tracking if not already done
+    if (!robot.visitedFloors) {
+      robot.visitedFloors = new Set();
+    }
     
     // Function to clean a floor then move to the next
     const cleanFloor = (floorNumber) => {
       console.log(`Cleaning bot ${robot.config.name} starting to clean floor ${floorNumber}`);
       
-      // Mark this floor as visited
+      // Ensure visitedFloors is initialized
+      if (!robot.visitedFloors) {
+        robot.visitedFloors = new Set();
+      }
+      
+      // Mark this floor as visited - IMMEDIATELY when cleaning starts
       robot.visitedFloors.add(floorNumber);
+      console.log(`Floor ${floorNumber} marked as cleaned. Total floors cleaned: ${robot.visitedFloors.size}`);
       
       // Simulate cleaning time
       setTimeout(() => {
@@ -154,27 +166,59 @@ class CleaningScenario {
         // Move to next floor if simulation is still running
         if (simulator.running) {
           const nextFloor = this.getNextFloorToClean(robot);
+          console.log(`Cleaning bot ${robot.config.name} planning to move to floor ${nextFloor}`);
           
-          // Request elevator with 'bot' type for statistics
+          // Store the simulator reference in the robot for later use
+          robot.simulator = simulator;
+          
+          // Explicitly set requesterType to 'bot'
           robot.goToFloor(nextFloor)
             .then(() => {
+              console.log(`Cleaning bot ${robot.config.name} successfully moved to floor ${nextFloor}`);
               // Start cleaning the next floor
               cleanFloor(nextFloor);
             })
             .catch(err => {
               console.error(`Error moving cleaning bot to floor ${nextFloor}:`, err);
+              
+              // Wait a bit and try again with a different floor
+              setTimeout(() => {
+                if (simulator.running) {
+                  const alternateFloor = (nextFloor % this.config.floors) + 1;
+                  console.log(`Cleaning bot ${robot.config.name} trying alternate floor ${alternateFloor}`);
+                  
+                  robot.goToFloor(alternateFloor)
+                    .then(() => {
+                      cleanFloor(alternateFloor);
+                    })
+                    .catch(secondErr => {
+                      console.error(`Error moving to alternate floor:`, secondErr);
+                      // Just stay on current floor and continue cleaning cycle
+                      cleanFloor(floorNumber);
+                    });
+                }
+              }, 10000 / simulator.config.simulationSpeed);
             });
         }
       }, this.config.cleaningTimePerFloor / simulator.config.simulationSpeed);
     };
     
     // Start the cleaning cycle at the specified floor
+    console.log(`Cleaning bot ${robot.config.name} moving to starting floor ${startFloor}`);
+    
+    // Store the simulator reference in the robot for later use
+    robot.simulator = simulator;
+    
+    // If the robot can't move to the starting floor after multiple attempts,
+    // just start cleaning the current floor
     robot.goToFloor(startFloor)
       .then(() => {
         cleanFloor(startFloor);
       })
       .catch(err => {
         console.error(`Error moving cleaning bot to starting floor:`, err);
+        console.log(`Starting to clean current floor ${robot.state.currentFloor} instead`);
+        cleanFloor(robot.state.currentFloor);
       });
   }
   

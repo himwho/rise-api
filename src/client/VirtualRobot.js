@@ -47,11 +47,13 @@ class VirtualRobot {
 
   // Disconnect from elevator
   disconnectFromElevator() {
-    if (this.elevatorConnection) {
-      this.elevatorConnection.removeEventListener('floorChanged', this.handleElevatorFloorChange.bind(this));
-      this.elevatorConnection.removeEventListener('doorStateChanged', this.handleElevatorDoorChange.bind(this));
-      this.elevatorConnection = null;
+    if (!this.elevatorConnection) {
+      return; // Already disconnected
     }
+    
+    console.log(`Robot ${this.config.name} disconnecting from elevator`);
+    this.elevatorConnection = null;
+    this.elevatorState = null;
   }
 
   // Event handlers
@@ -106,15 +108,38 @@ class VirtualRobot {
   }
 
   processNextTask() {
-    if (this.taskQueue.length === 0) {
-      this.currentTask = null;
+    if (this.taskQueue.length === 0 || this.currentTask) {
       return;
     }
     
     this.currentTask = this.taskQueue.shift();
     
-    if (this.currentTask.type === 'FLOOR_CHANGE') {
-      this.executeFloorChangeTask();
+    try {
+      if (this.currentTask.type === 'FLOOR_CHANGE') {
+        this.changeFloor(this.currentTask.targetFloor)
+          .then(() => {
+            if (this.currentTask) {
+              this.currentTask.resolve();
+              this.currentTask = null;
+              this.processNextTask();
+            }
+          })
+          .catch(err => {
+            console.error('Error during floor change task:', err);
+            if (this.currentTask) {
+              this.currentTask.reject(err);
+              this.currentTask = null;
+              this.processNextTask(); // Continue with next task even after error
+            }
+          });
+      }
+    } catch (error) {
+      console.error('Error processing task:', error);
+      if (this.currentTask) {
+        this.currentTask.reject(error);
+        this.currentTask = null;
+        this.processNextTask();
+      }
     }
   }
 
@@ -154,23 +179,58 @@ class VirtualRobot {
       return Promise.reject(new Error('Not connected to elevator'));
     }
     
-    // Request elevator to current floor, passing 'bot' as the requester type
+    console.log(`Robot ${this.config.name} explicitly requesting elevator as 'bot' type`);
+    // Request elevator to current floor, explicitly passing 'bot' as the requester type
     this.elevatorConnection.requestFloor(this.state.currentFloor, 'bot');
+    
+    // Request repeatedly every few seconds to ensure it gets attention
+    const requestInterval = setInterval(() => {
+      if (this.state.status === 'WAITING_FOR_ELEVATOR') {
+        console.log(`Robot ${this.config.name} re-requesting elevator as 'bot' type`);
+        this.elevatorConnection.requestFloor(this.state.currentFloor, 'bot');
+      } else {
+        clearInterval(requestInterval);
+      }
+    }, 5000);
     
     // Wait for elevator to arrive with door open
     return new Promise((resolve, reject) => {
-      const checkElevator = setInterval(() => {
+      let checkInterval = null;
+      let timeoutId = null;
+      
+      const cleanup = () => {
+        if (checkInterval) clearInterval(checkInterval);
+        if (timeoutId) clearTimeout(timeoutId);
+      };
+      
+      checkInterval = setInterval(() => {
         if (this.elevatorState.currentFloor === this.state.currentFloor && 
             this.elevatorState.doorState === 'OPEN') {
-          clearInterval(checkElevator);
+          cleanup();
           resolve();
         }
       }, 500);
       
       // Timeout after 30 seconds
-      setTimeout(() => {
-        clearInterval(checkElevator);
-        reject(new Error('Timeout waiting for elevator'));
+      timeoutId = setTimeout(() => {
+        cleanup();
+        console.log(`Robot ${this.config.name} timed out waiting for elevator at floor ${this.state.currentFloor}`);
+        
+        // Try again instead of failing
+        console.log(`Robot ${this.config.name} is trying again to call elevator`);
+        this.elevatorConnection.requestFloor(this.state.currentFloor, 'bot');
+        
+        // Give it another 30 seconds
+        setTimeout(() => {
+          if (this.elevatorState.currentFloor === this.state.currentFloor && 
+              this.elevatorState.doorState === 'OPEN') {
+            resolve();
+          } else {
+            console.log(`Robot ${this.config.name} failed to get elevator after retry, initiating recovery`);
+            this.recoverFromTimeout();
+            reject(new Error('Timeout waiting for elevator after retry'));
+          }
+        }, 30000);
       }, 30000);
     });
   }
@@ -214,6 +274,115 @@ class VirtualRobot {
   // Get current state
   getState() {
     return { ...this.state };
+  }
+
+  // Update the changeFloor method to properly handle the elevator request
+  changeFloor(targetFloor) {
+    if (targetFloor === this.state.currentFloor) {
+      return Promise.resolve();
+    }
+    
+    console.log(`Robot ${this.config.name} changing floor from ${this.state.currentFloor} to ${targetFloor}`);
+    
+    return new Promise((resolve, reject) => {
+      // Move to elevator if not already there
+      this.moveToElevator()
+        .then(() => {
+          // Call elevator to current floor
+          this.state.status = 'WAITING_FOR_ELEVATOR';
+          console.log(`Robot ${this.config.name} calling elevator to floor ${this.state.currentFloor}`);
+          return this.callElevator();
+        })
+        .then(() => {
+          // Enter elevator
+          console.log(`Robot ${this.config.name} entering elevator`);
+          return this.enterElevatorAndGoToFloor(targetFloor);
+        })
+        .then(() => {
+          console.log(`Robot ${this.config.name} successfully changed floor to ${targetFloor}`);
+          resolve();
+        })
+        .catch(err => {
+          console.error(`Robot ${this.config.name} failed to change floor:`, err);
+          reject(err);
+        });
+    });
+  }
+
+  // Add a new method to handle entering elevator and going to floor
+  enterElevatorAndGoToFloor(targetFloor) {
+    return new Promise((resolve, reject) => {
+      // Enter elevator
+      console.log(`Robot ${this.config.name} entering elevator at floor ${this.state.currentFloor}`);
+      this.state.status = 'ENTERING_ELEVATOR';
+      
+      // Simulate time to enter elevator
+      setTimeout(() => {
+        this.state.status = 'IN_ELEVATOR';
+        console.log(`Robot ${this.config.name} inside elevator, requesting target floor ${targetFloor}`);
+        
+        // Request target floor with 'bot' type
+        this.elevatorConnection.requestFloor(targetFloor, 'bot');
+        
+        // Wait for elevator to arrive at target floor with door open
+        const checkArrival = setInterval(() => {
+          if (this.elevatorState.currentFloor === targetFloor && 
+              this.elevatorState.doorState === 'OPEN') {
+            clearInterval(checkArrival);
+            clearTimeout(arrivalTimeout);
+            
+            // Exit elevator
+            this.exitElevatorAtFloor(targetFloor, resolve);
+          }
+        }, 500);
+        
+        // Timeout for arrival
+        const arrivalTimeout = setTimeout(() => {
+          clearInterval(checkArrival);
+          reject(new Error(`Timeout waiting for elevator to arrive at floor ${targetFloor}`));
+        }, 60000); // 1 minute timeout
+      }, 3000);
+    });
+  }
+
+  // Add a method to handle exiting the elevator
+  exitElevatorAtFloor(floor, callback) {
+    console.log(`Robot ${this.config.name} exiting elevator at floor ${floor}`);
+    this.state.status = 'EXITING_ELEVATOR';
+    
+    // Simulate time to exit elevator
+    setTimeout(() => {
+      this.state.currentFloor = floor;
+      this.state.status = 'MOVING_TO_DESTINATION';
+      
+      // Simulate moving to final destination on floor
+      setTimeout(() => {
+        this.state.status = 'IDLE';
+        console.log(`Robot ${this.config.name} arrived at destination on floor ${floor}`);
+        
+        if (callback) callback();
+      }, 3000);
+    }, 3000);
+  }
+
+  // Add a method to recover from timeouts
+  recoverFromTimeout() {
+    console.log(`Robot ${this.config.name} attempting to recover from timeout`);
+    
+    // Reset status
+    this.state.status = 'IDLE';
+    
+    // Clear current task
+    if (this.currentTask) {
+      this.currentTask.reject(new Error('Task aborted during recovery'));
+      this.currentTask = null;
+    }
+    
+    // Wait a bit before continuing
+    setTimeout(() => {
+      console.log(`Robot ${this.config.name} recovered and continuing with next task`);
+      this.processNextTask();
+    }, 5000);
   }
 }
 
