@@ -8,7 +8,7 @@ class VirtualRobot {
   constructor(config = {}) {
     // Default configuration
     this.config = {
-      name: 'VacuumBot',
+      name: 'Bot',
       startFloor: 1,
       movementSpeed: 1, // meters per second
       batteryCapacity: 5000, // mAh
@@ -34,6 +34,9 @@ class VirtualRobot {
     this.elevatorState = null;
     this.taskQueue = [];
     this.currentTask = null;
+
+    // Start battery monitoring
+    this.startBatteryMonitoring();
   }
 
   // Connect to elevator system
@@ -87,30 +90,53 @@ class VirtualRobot {
 
   // Robot actions
   goToFloor(floorNumber) {
-    if (!this.elevatorConnection) {
-      throw new Error('Not connected to elevator system');
+    if (floorNumber < 1) {
+      return Promise.reject(new Error(`Invalid floor number: ${floorNumber}`));
     }
     
-    if (floorNumber === this.state.currentFloor) {
+    // If already at the requested floor, resolve immediately
+    if (this.state.currentFloor === floorNumber && this.state.status === 'IDLE') {
       console.log(`Already at floor ${floorNumber}`);
       return Promise.resolve();
     }
     
-    this.state.targetFloor = floorNumber;
-    console.log(`Robot ${this.config.name} planning to go to floor ${floorNumber}`);
+    // If already going to this floor, return the existing promise
+    if (this.state.targetFloor === floorNumber) {
+      console.log(`Already going to floor ${floorNumber}`);
+      return this.currentFloorPromise;
+    }
     
-    return new Promise((resolve, reject) => {
-      this.taskQueue.push({
-        type: 'FLOOR_CHANGE',
-        targetFloor: floorNumber,
-        resolve,
-        reject
-      });
+    // Update state
+    this.state.targetFloor = floorNumber;
+    this.state.status = 'WAITING_FOR_ELEVATOR';
+    
+    console.log(`Robot ${this.config.name} requesting elevator to go to floor ${floorNumber}`);
+    
+    // Create a promise that will resolve when we reach the target floor
+    this.currentFloorPromise = new Promise((resolve, reject) => {
+      // Store the resolve/reject functions
+      this.resolveFloorPromise = resolve;
+      this.rejectFloorPromise = reject;
       
-      if (!this.currentTask) {
-        this.processNextTask();
+      // Set a timeout to reject the promise if it takes too long
+      this.floorPromiseTimeout = setTimeout(() => {
+        if (this.state.currentFloor !== floorNumber) {
+          console.error(`Timeout waiting for elevator to floor ${floorNumber}`);
+          this.state.status = 'IDLE';
+          this.state.targetFloor = null;
+          reject(new Error(`Timeout waiting for elevator to floor ${floorNumber}`));
+        }
+      }, 60000); // 1 minute timeout
+      
+      // Request the elevator with 'bot' type for statistics
+      if (this.elevatorConnection) {
+        this.elevatorConnection.requestFloor(this.state.currentFloor, 'bot');
+      } else {
+        reject(new Error('No elevator connection'));
       }
     });
+    
+    return this.currentFloorPromise;
   }
 
   processNextTask() {
@@ -391,34 +417,49 @@ class VirtualRobot {
     }, 5000);
   }
 
-  // Add a method to update battery level
+  // Update the updateBatteryLevel method to ensure it's called regularly
   updateBatteryLevel() {
     const now = Date.now();
     const elapsedMinutes = (now - this.state.lastBatteryUpdateTime) / 60000;
     
-    if (this.state.status === 'CHARGING') {
-      // Charging - increase battery level
-      const chargeAmount = elapsedMinutes * this.config.chargingRate;
-      this.state.batteryLevel = Math.min(this.config.batteryCapacity, this.state.batteryLevel + chargeAmount);
-    } else if (this.state.status !== 'IDLE') {
-      // Discharging during operation
-      const dischargeAmount = elapsedMinutes * this.config.batteryConsumptionRate;
-      this.state.batteryLevel = Math.max(0, this.state.batteryLevel - dischargeAmount);
+    if (elapsedMinutes > 0) {
+      // Only consume battery if the robot is active (not IDLE or CHARGING)
+      if (this.state.status !== 'IDLE' && this.state.status !== 'CHARGING') {
+        // Calculate battery consumption
+        const batteryConsumed = elapsedMinutes * this.config.batteryConsumptionRate;
+        this.state.batteryLevel -= batteryConsumed;
+        
+        // Ensure battery doesn't go below 0
+        if (this.state.batteryLevel < 0) {
+          this.state.batteryLevel = 0;
+        }
+        
+        // Update battery percentage
+        this.state.batteryPercentage = Math.round((this.state.batteryLevel / this.config.batteryCapacity) * 100);
+        
+        // Log battery level every 5% change
+        if (Math.floor(this.state.batteryPercentage / 5) !== Math.floor((this.state.batteryPercentage + batteryConsumed) / 5)) {
+          console.log(`Robot ${this.config.name} battery at ${this.state.batteryPercentage}%`);
+        }
+        
+        // Check if battery is critically low
+        if (this.state.batteryPercentage < 10 && this.state.status !== 'RETURNING_TO_CHARGER') {
+          console.log(`Robot ${this.config.name} battery critically low (${this.state.batteryPercentage}%), returning to charging station`);
+          this.returnToChargingStation();
+        }
+      }
+      
+      // Update last battery update time
+      this.state.lastBatteryUpdateTime = now;
     }
-    
-    // Update battery percentage
-    this.state.batteryPercentage = Math.round((this.state.batteryLevel / this.config.batteryCapacity) * 100);
-    
-    // Update last battery update time
-    this.state.lastBatteryUpdateTime = now;
-    
-    // Check if battery is critically low
-    if (this.state.batteryPercentage < 15 && this.state.status !== 'CHARGING') {
-      console.log(`Robot ${this.config.name} battery low (${this.state.batteryPercentage}%), returning to charging station`);
-      this.returnToChargingStation();
-    }
-    
-    return this.state.batteryPercentage;
+  }
+
+  // Add a method to start regular battery updates
+  startBatteryMonitoring() {
+    // Update battery level every 10 seconds
+    this.batteryMonitorInterval = setInterval(() => {
+      this.updateBatteryLevel();
+    }, 10000);
   }
 
   // Add a method to return to charging station

@@ -68,13 +68,13 @@ async function runCLI() {
   // Get configuration from user
   const floors = await promptNumber('Enter number of floors in the building', 10);
   const elevators = await promptNumber('Enter number of elevators in the building', 1);
-  const cleaningBots = await promptNumber('Enter number of cleaning robots', 1);
+  const bots = await promptNumber('Enter number of robots', 1);
   
   // Remove tenant count prompt and enhance the activity level description
   const tenantActivityLevel = await promptNumber(
     'Enter building traffic level (1-10, where:\n' +
-    '  1 = Very low (~5 elevator requests per hour)\n' +
-    '  5 = Medium (~30 elevator requests per hour)\n' +
+    '  1 = Very low (~1-2 elevator requests per hour)\n' +
+    '  5 = Medium (~25 elevator requests per hour)\n' +
     '  10 = Very high (~100 elevator requests per hour)',
     5
   );
@@ -112,11 +112,17 @@ async function runCLI() {
     10
   );
   
+  // Add a visualization option to the CLI
+  const useVisualization = await promptYesNo(
+    'Enable ASCII visualization? (y/n, default: n)',
+    false
+  );
+  
   // Update the configuration summary
   console.log('\nConfiguration Summary:');
   console.log(`- Building: ${floors} floors`);
   console.log(`- Elevators: ${elevators}`);
-  console.log(`- Cleaning Robots: ${cleaningBots}`);
+  console.log(`- Robots: ${bots}`);
   console.log(`- Building Traffic: ${tenantActivityLevel}/10 (~${calculateHourlyRequests(tenantActivityLevel)} elevator requests per hour)`);
   console.log(`- Simulation Speed: ${simulationSpeed}x`);
   console.log(`- Simulation Duration: ${simulationHours} hours`);
@@ -125,6 +131,7 @@ async function runCLI() {
   if (useOffPeakHours) {
     console.log(`- Off-Peak Hours: ${offPeakStartHour}:00 to ${offPeakEndHour}:00`);
   }
+  console.log(`- ASCII Visualization: ${useVisualization ? 'Enabled' : 'Disabled'}`);
   
   const confirm = await promptYesNo('\nStart simulation with these settings?', true);
   
@@ -135,7 +142,7 @@ async function runCLI() {
     runSimulation({
       floors,
       elevators,
-      cleaningBots,
+      bots,
       simulationSpeed,
       simulationHours,
       tenantActivityLevel: tenantActivityLevel / 10,
@@ -145,7 +152,8 @@ async function runCLI() {
       cleaningTimeMinutes: cleaningTimeMinutes,
       useOffPeakHours: useOffPeakHours,
       offPeakStartHour: offPeakStartHour,
-      offPeakEndHour: offPeakEndHour
+      offPeakEndHour: offPeakEndHour,
+      visualize: useVisualization
     });
   } else {
     console.log('Simulation cancelled.');
@@ -155,8 +163,8 @@ async function runCLI() {
 
 // Helper function to calculate hourly requests based on activity level
 function calculateHourlyRequests(activityLevel) {
-  // Scale from 5 requests at level 1 to 100 requests at level 10
-  return Math.round(5 + ((activityLevel - 1) / 9) * 95);
+  // Scale from 1 request at level 1 to 100 requests at level 10
+  return Math.round(1 + ((activityLevel - 1) / 9) * 99);
 }
 
 // Function to run the simulation with the given configuration
@@ -166,9 +174,10 @@ function runSimulation(config) {
   // Create simulator
   const simulator = new Simulator({
     elevatorCount: config.elevators,
-    robotCount: config.cleaningBots,
+    robotCount: config.bots,
     floors: config.floors,
-    simulationSpeed: config.simulationSpeed
+    simulationSpeed: config.simulationSpeed,
+    visualize: config.visualize
   });
   
   // Create transports and APIs for each elevator
@@ -199,7 +208,7 @@ function runSimulation(config) {
         const scenario = new CleaningScenario({
           floors: config.floors,
           elevators: config.elevators,
-          cleaningBots: config.cleaningBots,
+          bots: config.bots,
           tenantActivityLevel: config.tenantActivityLevel,
           simulationDuration: config.simulationHours * 60 * 60 * 1000,
           prioritizationMode: config.prioritizationMode,

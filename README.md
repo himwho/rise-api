@@ -4,7 +4,7 @@
 
 This repo contains tools and testing for constructing an API for enabling elevators to communicate their floor and door states to a server or the LAN and for other clients to request and receive information from the server or the LAN. The clients can also request the elevator through the LAN or the server to move to a specific floor.
 
-We will start with some common elevator protocols such as the CANopen Elevator Protocol (CiA 417 profile), ASME A17.1 protocol and the KONE Elevator Control Network protocol.
+We will start with some common elevator protocols such as the CANopen Elevator Protocol (CiA 417 profile) and the KONE Elevator Control Network protocol.
 
 ## API
 
@@ -45,7 +45,7 @@ The repository includes a simulation environment to test the API:
 
 2. Run the simulation:
    ```
-   npm run simulate
+   npm run simulate-cleaning
    ```
 
 3. Test the API:

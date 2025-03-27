@@ -6,6 +6,7 @@
 
 const VirtualElevator = require('../elevator/VirtualElevator');
 const VirtualRobot = require('../client/VirtualRobot');
+const AsciiVisualizer = require('../visualization/AsciiVisualizer');
 
 class Simulator {
   constructor(config = {}) {
@@ -14,6 +15,7 @@ class Simulator {
       robotCount: 1,
       floors: 10,
       simulationSpeed: 1.0, // 1.0 = real-time, 2.0 = 2x speed
+      visualize: false, // New option for visualization
       ...config
     };
     
@@ -24,6 +26,15 @@ class Simulator {
     this.eventLog = [];
     
     this.initialize();
+    
+    // Initialize visualizer if enabled
+    if (this.config.visualize) {
+      this.visualizer = new AsciiVisualizer({
+        floors: this.config.floors,
+        elevators: this.config.elevatorCount,
+        refreshRate: 1000 / this.config.simulationSpeed
+      });
+    }
   }
   
   initialize() {
@@ -138,6 +149,11 @@ class Simulator {
     this.timeouts = [];
     this.intervals = [];
     
+    // Initialize visualizer if enabled
+    if (this.config.visualize && this.visualizer) {
+      this.visualizer.initialize(this);
+    }
+    
     // Run each step at its scheduled time
     scenario.steps.forEach(step => {
       const timeoutId = setTimeout(() => {
@@ -159,6 +175,11 @@ class Simulator {
       
       if (scenario.onComplete) {
         scenario.onComplete(this);
+      }
+      
+      // Stop visualizer if enabled
+      if (this.config.visualize && this.visualizer) {
+        this.visualizer.stop();
       }
     }, scenario.duration / this.config.simulationSpeed);
     
