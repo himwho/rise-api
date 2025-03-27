@@ -1,4 +1,4 @@
-# rise-api
+# rise
 
 ## Description
 
