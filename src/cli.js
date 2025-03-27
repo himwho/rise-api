@@ -47,6 +47,7 @@ async function runCLI() {
   
   // Get configuration from user
   const floors = await promptNumber('Enter number of floors in the building', 10);
+  const elevators = await promptNumber('Enter number of elevators in the building', 1);
   const cleaningBots = await promptNumber('Enter number of cleaning robots', 2);
   const tenants = await promptNumber('Enter number of tenants in the building', 5);
   const simulationSpeed = await promptNumber('Enter simulation speed (1 = real-time, 10 = 10x speed)', 10);
@@ -55,6 +56,7 @@ async function runCLI() {
   
   console.log('\nConfiguration Summary:');
   console.log(`- Building: ${floors} floors`);
+  console.log(`- Elevators: ${elevators}`);
   console.log(`- Cleaning Robots: ${cleaningBots}`);
   console.log(`- Tenants: ${tenants}`);
   console.log(`- Simulation Speed: ${simulationSpeed}x`);
@@ -69,6 +71,7 @@ async function runCLI() {
     // Run the simulation with the configured settings
     runSimulation({
       floors,
+      elevators,
       cleaningBots,
       tenants,
       simulationSpeed,
@@ -87,42 +90,55 @@ function runSimulation(config) {
   
   // Create simulator
   const simulator = new Simulator({
-    elevatorCount: 1,
+    elevatorCount: config.elevators,
     robotCount: config.cleaningBots,
     floors: config.floors,
     simulationSpeed: config.simulationSpeed
   });
   
-  // Create transport and API
-  const transport = new CANopenTransport({
-    simulationMode: true,
-    virtualElevator: simulator.elevators[0]
-  });
+  // Create transports and APIs for each elevator
+  const transports = [];
+  const apis = [];
   
-  const api = new ElevatorAPI(transport);
+  for (let i = 0; i < config.elevators; i++) {
+    const transport = new CANopenTransport({
+      simulationMode: true,
+      virtualElevator: simulator.elevators[i]
+    });
+    
+    const api = new ElevatorAPI(transport);
+    
+    transports.push(transport);
+    apis.push(api);
+  }
   
-  // Connect API and run scenario
-  api.connect().then(connected => {
-    if (connected) {
-      console.log('API connected to elevator system');
+  // Connect all APIs
+  Promise.all(apis.map(api => api.connect()))
+    .then(results => {
+      const allConnected = results.every(result => result === true);
       
-      // Create cleaning scenario
-      const scenario = new CleaningScenario({
-        floors: config.floors,
-        cleaningBots: config.cleaningBots,
-        tenants: config.tenants,
-        simulationDuration: config.simulationHours * 60 * 60 * 1000,
-        tenantActivityLevel: config.activityLevel
-      });
-      
-      // Run the scenario
-      simulator.runScenario(scenario);
-    } else {
-      console.error('Failed to connect API to elevator system');
-    }
-  }).catch(err => {
-    console.error('Error connecting API:', err);
-  });
+      if (allConnected) {
+        console.log('All APIs connected to elevator systems');
+        
+        // Create cleaning scenario with multiple elevators
+        const scenario = new CleaningScenario({
+          floors: config.floors,
+          elevators: config.elevators,
+          cleaningBots: config.cleaningBots,
+          tenants: config.tenants,
+          simulationDuration: config.simulationHours * 60 * 60 * 1000,
+          tenantActivityLevel: config.activityLevel
+        });
+        
+        // Run the scenario
+        simulator.runScenario(scenario);
+      } else {
+        console.error('Failed to connect one or more APIs to elevator systems');
+      }
+    })
+    .catch(err => {
+      console.error('Error connecting APIs:', err);
+    });
 }
 
 // Run the CLI if this file is executed directly

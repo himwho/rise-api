@@ -5,8 +5,8 @@
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
-    "simulate": "node src/index.js",
-    "clean": "node src/cli.js",
+    "simulate-basic": "node src/index.js",
+    "simulate-cleaning": "node src/cli.js",
     "test": "jest"
   },
   "keywords": [

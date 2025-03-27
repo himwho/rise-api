@@ -9,6 +9,7 @@ class CleaningScenario {
     // Default configuration
     this.config = {
       floors: 10,
+      elevators: 1,
       cleaningBots: 2,
       tenants: 5,
       cleaningTimePerFloor: 20 * 60 * 1000, // 20 minutes in milliseconds
@@ -17,7 +18,7 @@ class CleaningScenario {
       ...config
     };
     
-    this.name = `Cleaning Scenario (${this.config.floors} floors, ${this.config.cleaningBots} bots, ${this.config.tenants} tenants)`;
+    this.name = `Cleaning Scenario (${this.config.floors} floors, ${this.config.elevators} elevators, ${this.config.cleaningBots} bots, ${this.config.tenants} tenants)`;
     this.duration = this.config.simulationDuration;
     
     // Generate steps for the scenario
@@ -40,15 +41,19 @@ class CleaningScenario {
       console.log(`Floors cleaned: ${cleanedFloors.size}`);
       console.log(`Cleaning coverage: ${Math.round((cleanedFloors.size / this.config.floors) * 100)}%`);
       
-      // Elevator usage statistics
-      const totalRequests = simulator.elevators[0].totalRequests || 0;
-      const botRequests = simulator.elevators[0].botRequests || 0;
-      const tenantRequests = simulator.elevators[0].tenantRequests || 0;
-      
+      // Elevator usage statistics for all elevators
       console.log(`\nElevator Usage Statistics:`);
-      console.log(`Total elevator requests: ${totalRequests}`);
-      console.log(`Cleaning bot requests: ${botRequests} (${Math.round((botRequests / totalRequests) * 100)}%)`);
-      console.log(`Tenant requests: ${tenantRequests} (${Math.round((tenantRequests / totalRequests) * 100)}%)`);
+      
+      simulator.elevators.forEach((elevator, i) => {
+        const totalRequests = elevator.totalRequests || 0;
+        const botRequests = elevator.botRequests || 0;
+        const tenantRequests = elevator.tenantRequests || 0;
+        
+        console.log(`\nElevator ${i+1}:`);
+        console.log(`  Total requests: ${totalRequests}`);
+        console.log(`  Cleaning bot requests: ${botRequests} (${totalRequests > 0 ? Math.round((botRequests / totalRequests) * 100) : 0}%)`);
+        console.log(`  Tenant requests: ${tenantRequests} (${totalRequests > 0 ? Math.round((tenantRequests / totalRequests) * 100) : 0}%)`);
+      });
       
       // Final state
       console.log('\nFinal State:');
@@ -71,17 +76,27 @@ class CleaningScenario {
     
     // Initialize cleaning bots with their cleaning schedule
     for (let i = 0; i < this.config.cleaningBots; i++) {
+      // Assign each bot to an elevator (round-robin)
+      const elevatorIndex = i % this.config.elevators;
+      
       steps.push({
         time: 1000 + (i * 2000), // Stagger start times
-        description: `Initialize cleaning bot ${i+1} schedule`,
+        description: `Initialize cleaning bot ${i+1} schedule (using elevator ${elevatorIndex+1})`,
         action: (simulator) => {
           const robot = simulator.robots[i];
           
           // Set robot type to cleaner
           robot.config.type = 'cleaner';
+          robot.config.elevatorIndex = elevatorIndex;
           
           // Initialize tracking of visited floors
           robot.visitedFloors = new Set();
+          
+          // Connect robot to its assigned elevator
+          if (robot.elevatorConnection !== simulator.elevators[elevatorIndex]) {
+            robot.disconnectFromElevator();
+            robot.connectToElevator(simulator.elevators[elevatorIndex]);
+          }
           
           // Start the cleaning cycle
           this.startCleaningCycle(robot, 1, simulator);
@@ -177,6 +192,7 @@ class CleaningScenario {
   generateTenantSteps() {
     const steps = [];
     const tenantCount = this.config.tenants;
+    const elevatorCount = this.config.elevators;
     
     // Create initial tenant positions (most start on floor 1)
     const tenantPositions = [];
@@ -215,20 +231,24 @@ class CleaningScenario {
           time: tripTime,
           description: `Tenant ${i+1} requests elevator to floor ${destinationFloor}`,
           action: (simulator) => {
+            // Choose a random elevator
+            const elevatorIndex = Math.floor(Math.random() * elevatorCount);
+            const elevator = simulator.elevators[elevatorIndex];
+            
             // Create a virtual tenant request
-            console.log(`Tenant ${i+1} calling elevator to go to floor ${destinationFloor}`);
+            console.log(`Tenant ${i+1} calling elevator ${elevatorIndex+1} to go to floor ${destinationFloor}`);
             
             // Request elevator with 'tenant' type for statistics
-            simulator.elevators[0].requestFloor(currentFloor, 'tenant');
+            elevator.requestFloor(currentFloor, 'tenant');
             
             // Simulate tenant entering elevator and requesting destination
             setTimeout(() => {
-              if (simulator.elevators[0].state.currentFloor === currentFloor && 
-                  simulator.elevators[0].state.doorState === 'OPEN') {
-                console.log(`Tenant ${i+1} entered elevator and requested floor ${destinationFloor}`);
-                simulator.elevators[0].requestFloor(destinationFloor, 'tenant');
+              if (elevator.state.currentFloor === currentFloor && 
+                  elevator.state.doorState === 'OPEN') {
+                console.log(`Tenant ${i+1} entered elevator ${elevatorIndex+1} and requested floor ${destinationFloor}`);
+                elevator.requestFloor(destinationFloor, 'tenant');
               } else {
-                console.log(`Tenant ${i+1} missed the elevator or got impatient`);
+                console.log(`Tenant ${i+1} missed elevator ${elevatorIndex+1} or got impatient`);
               }
             }, 5000 / simulator.config.simulationSpeed);
           }
