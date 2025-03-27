@@ -41,6 +41,26 @@ function promptYesNo(question, defaultValue) {
   });
 }
 
+// Add this function at the top of your CLI script, near the other prompt functions
+function promptString(question, defaultValue = '') {
+  return new Promise((resolve) => {
+    const defaultText = defaultValue ? ` (default: ${defaultValue})` : '';
+    rl.question(`${question}${defaultText}: `, answer => {
+      resolve(answer || defaultValue);
+    });
+  });
+}
+
+// Add this function at the top of your CLI script
+function askQuestion(question, defaultValue = '') {
+  return new Promise(resolve => {
+    const defaultText = defaultValue ? ` (default: ${defaultValue})` : '';
+    rl.question(`${question}${defaultText}: `, answer => {
+      resolve(answer || defaultValue);
+    });
+  });
+}
+
 // Main function to run the CLI
 async function runCLI() {
   console.log('=== Elevator Cleaning Simulation Configuration ===\n');
@@ -48,20 +68,63 @@ async function runCLI() {
   // Get configuration from user
   const floors = await promptNumber('Enter number of floors in the building', 10);
   const elevators = await promptNumber('Enter number of elevators in the building', 1);
-  const cleaningBots = await promptNumber('Enter number of cleaning robots', 2);
-  const tenants = await promptNumber('Enter number of tenants in the building', 5);
+  const cleaningBots = await promptNumber('Enter number of cleaning robots', 1);
+  
+  // Remove tenant count prompt and enhance the activity level description
+  const tenantActivityLevel = await promptNumber(
+    'Enter building traffic level (1-10, where:\n' +
+    '  1 = Very low (~5 elevator requests per hour)\n' +
+    '  5 = Medium (~30 elevator requests per hour)\n' +
+    '  10 = Very high (~100 elevator requests per hour)',
+    5
+  );
+  
   const simulationSpeed = await promptNumber('Enter simulation speed (1 = real-time, 10 = 10x speed)', 10);
   const simulationHours = await promptNumber('Enter simulation duration in hours', 2);
-  const activityLevel = await promptNumber('Enter tenant activity level (1-10)', 5) / 10;
   
+  // Add new parameters to the CLI
+  const prioritizationMode = await promptString(
+    'Enter elevator prioritization mode (equal, tenant-priority, bot-priority)',
+    'equal'
+  );
+
+  const batteryCapacity = await promptString(
+    'Enter robot battery capacity in mAh (default: 5000): ', '5000'
+  );
+
+  const batteryConsumptionRate = await promptString(
+    'Enter battery consumption rate in mAh per minute (default: 10): ', '10'
+  );
+
+  const useOffPeakHours = await promptYesNo(
+    'Enable off-peak hours mode for cleaning? (y/n, default: n): ', false
+  );
+
+  let offPeakStartHour, offPeakEndHour;
+  if (useOffPeakHours) {
+    offPeakStartHour = await promptNumber('Enter off-peak start hour (0-23, default: 22): ', 22);
+    
+    offPeakEndHour = await promptNumber('Enter off-peak end hour (0-23, default: 6): ', 6);
+  }
+  
+  const cleaningTimeMinutes = await promptNumber(
+    'Enter cleaning time per floor in minutes',
+    10
+  );
+  
+  // Update the configuration summary
   console.log('\nConfiguration Summary:');
   console.log(`- Building: ${floors} floors`);
   console.log(`- Elevators: ${elevators}`);
   console.log(`- Cleaning Robots: ${cleaningBots}`);
-  console.log(`- Tenants: ${tenants}`);
+  console.log(`- Building Traffic: ${tenantActivityLevel}/10 (~${calculateHourlyRequests(tenantActivityLevel)} elevator requests per hour)`);
   console.log(`- Simulation Speed: ${simulationSpeed}x`);
   console.log(`- Simulation Duration: ${simulationHours} hours`);
-  console.log(`- Tenant Activity Level: ${activityLevel * 10}/10`);
+  console.log(`- Cleaning Time Per Floor: ${cleaningTimeMinutes} minutes`);
+  console.log(`- Elevator Prioritization: ${prioritizationMode}`);
+  if (useOffPeakHours) {
+    console.log(`- Off-Peak Hours: ${offPeakStartHour}:00 to ${offPeakEndHour}:00`);
+  }
   
   const confirm = await promptYesNo('\nStart simulation with these settings?', true);
   
@@ -73,15 +136,27 @@ async function runCLI() {
       floors,
       elevators,
       cleaningBots,
-      tenants,
       simulationSpeed,
       simulationHours,
-      activityLevel
+      tenantActivityLevel: tenantActivityLevel / 10,
+      prioritizationMode: prioritizationMode,
+      batteryCapacity: parseInt(batteryCapacity) || 5000,
+      batteryConsumptionRate: parseInt(batteryConsumptionRate) || 10,
+      cleaningTimeMinutes: cleaningTimeMinutes,
+      useOffPeakHours: useOffPeakHours,
+      offPeakStartHour: offPeakStartHour,
+      offPeakEndHour: offPeakEndHour
     });
   } else {
     console.log('Simulation cancelled.');
     rl.close();
   }
+}
+
+// Helper function to calculate hourly requests based on activity level
+function calculateHourlyRequests(activityLevel) {
+  // Scale from 5 requests at level 1 to 100 requests at level 10
+  return Math.round(5 + ((activityLevel - 1) / 9) * 95);
 }
 
 // Function to run the simulation with the given configuration
@@ -120,14 +195,20 @@ function runSimulation(config) {
       if (allConnected) {
         console.log('All APIs connected to elevator systems');
         
-        // Create cleaning scenario with multiple elevators
+        // Create cleaning scenario with updated parameters
         const scenario = new CleaningScenario({
           floors: config.floors,
           elevators: config.elevators,
           cleaningBots: config.cleaningBots,
-          tenants: config.tenants,
+          tenantActivityLevel: config.tenantActivityLevel,
           simulationDuration: config.simulationHours * 60 * 60 * 1000,
-          tenantActivityLevel: config.activityLevel
+          prioritizationMode: config.prioritizationMode,
+          batteryCapacity: config.batteryCapacity,
+          batteryConsumptionRate: config.batteryConsumptionRate,
+          cleaningTimeMinutes: config.cleaningTimeMinutes,
+          useOffPeakHours: config.useOffPeakHours,
+          offPeakStartHour: config.offPeakStartHour,
+          offPeakEndHour: config.offPeakEndHour
         });
         
         // Run the scenario

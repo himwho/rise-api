@@ -10,15 +10,25 @@ class CleaningScenario {
     this.config = {
       floors: 10,
       elevators: 1,
-      cleaningBots: 2,
-      tenants: 5,
-      cleaningTimePerFloor: 2 * 60 * 1000, // 2 minutes in milliseconds (for faster simulation)
+      cleaningBots: 1,
+      tenantActivityLevel: 0.4, // 0-1, how busy the building is
+      cleaningTimePerFloor: 10 * 60 * 1000, // 10 minutes in milliseconds (default)
       simulationDuration: 1 * 60 * 60 * 1000, // 1 hour in milliseconds
-      tenantActivityLevel: 0.3, // 0-1, how often tenants use the elevator
+      useOffPeakHours: false,
+      offPeakStartHour: 22,
+      offPeakEndHour: 6,
       ...config
     };
     
-    this.name = `Cleaning Scenario (${this.config.floors} floors, ${this.config.elevators} elevators, ${this.config.cleaningBots} bots, ${this.config.tenants} tenants)`;
+    // If cleaningTimeMinutes was provided, override the default
+    if (config.cleaningTimeMinutes) {
+      this.config.cleaningTimePerFloor = config.cleaningTimeMinutes * 60 * 1000;
+    }
+    
+    // Calculate hourly requests based on activity level (fixed formula)
+    this.hourlyRequests = Math.round(5 + (this.config.tenantActivityLevel * 95)); // Linear scale from 5 to 100
+    
+    this.name = `Cleaning Scenario (${this.config.floors} floors, ${this.config.elevators} elevators, ${this.config.cleaningBots} bots, ~${this.hourlyRequests} requests/hour)`;
     this.duration = this.config.simulationDuration;
     
     // Generate steps for the scenario
@@ -146,9 +156,68 @@ class CleaningScenario {
       robot.visitedFloors = new Set();
     }
     
+    // Function to check if current time is within off-peak hours
+    const isOffPeakHours = () => {
+      if (!this.config.useOffPeakHours) {
+        return true; // If off-peak mode is disabled, always return true
+      }
+      
+      // Convert simulation time to hours (assuming simulation starts at midnight)
+      const simulationHours = (simulator.time / 3600000) % 24;
+      
+      // Check if current hour is within off-peak range
+      if (this.config.offPeakStartHour < this.config.offPeakEndHour) {
+        // Simple case: off-peak is within the same day
+        return simulationHours >= this.config.offPeakStartHour && simulationHours < this.config.offPeakEndHour;
+      } else {
+        // Complex case: off-peak spans midnight
+        return simulationHours >= this.config.offPeakStartHour || simulationHours < this.config.offPeakEndHour;
+      }
+    };
+    
     // Function to clean a floor then move to the next
     const cleanFloor = (floorNumber) => {
-      console.log(`Cleaning bot ${robot.config.name} starting to clean floor ${floorNumber}`);
+      // Check if we're in off-peak hours
+      if (this.config.useOffPeakHours && !isOffPeakHours()) {
+        console.log(`Cleaning bot ${robot.config.name} waiting for off-peak hours to clean floor ${floorNumber}`);
+        
+        // Check again in 15 minutes
+        setTimeout(() => {
+          if (simulator.running) {
+            if (isOffPeakHours()) {
+              console.log(`Off-peak hours started, resuming cleaning`);
+              cleanFloor(floorNumber);
+            } else {
+              console.log(`Still not off-peak hours, continuing to wait`);
+              // Check again later
+              cleanFloor(floorNumber);
+            }
+          }
+        }, 15 * 60 * 1000 / simulator.config.simulationSpeed);
+        
+        return;
+      }
+      
+      // Update battery before starting to clean
+      robot.updateBatteryLevel();
+      
+      // Check if we have enough battery to clean this floor
+      if (!robot.canCompleteTask(this.config.cleaningTimePerFloor / 60000)) {
+        console.log(`Robot ${robot.config.name} doesn't have enough battery to clean floor ${floorNumber}, returning to charging station`);
+        robot.returnToChargingStation()
+          .then(() => {
+            // After charging, resume cleaning
+            setTimeout(() => {
+              if (simulator.running && robot.state.status === 'IDLE') {
+                console.log(`Robot ${robot.config.name} resuming cleaning after charging`);
+                cleanFloor(floorNumber);
+              }
+            }, 1000);
+          });
+        return;
+      }
+      
+      console.log(`Cleaning bot ${robot.config.name} starting to clean floor ${floorNumber} (${this.config.cleaningTimePerFloor/60000} minutes)`);
       
       // Ensure visitedFloors is initialized
       if (!robot.visitedFloors) {
@@ -181,23 +250,9 @@ class CleaningScenario {
             .catch(err => {
               console.error(`Error moving cleaning bot to floor ${nextFloor}:`, err);
               
-              // Wait a bit and try again with a different floor
-              setTimeout(() => {
-                if (simulator.running) {
-                  const alternateFloor = (nextFloor % this.config.floors) + 1;
-                  console.log(`Cleaning bot ${robot.config.name} trying alternate floor ${alternateFloor}`);
-                  
-                  robot.goToFloor(alternateFloor)
-                    .then(() => {
-                      cleanFloor(alternateFloor);
-                    })
-                    .catch(secondErr => {
-                      console.error(`Error moving to alternate floor:`, secondErr);
-                      // Just stay on current floor and continue cleaning cycle
-                      cleanFloor(floorNumber);
-                    });
-                }
-              }, 10000 / simulator.config.simulationSpeed);
+              // Just clean the current floor again
+              console.log(`Cleaning bot ${robot.config.name} will clean the current floor again`);
+              cleanFloor(floorNumber);
             });
         }
       }, this.config.cleaningTimePerFloor / simulator.config.simulationSpeed);
@@ -209,8 +264,7 @@ class CleaningScenario {
     // Store the simulator reference in the robot for later use
     robot.simulator = simulator;
     
-    // If the robot can't move to the starting floor after multiple attempts,
-    // just start cleaning the current floor
+    // If the robot can't move to the starting floor, just start cleaning the current floor
     robot.goToFloor(startFloor)
       .then(() => {
         cleanFloor(startFloor);
@@ -235,69 +289,55 @@ class CleaningScenario {
   
   generateTenantSteps() {
     const steps = [];
-    const tenantCount = this.config.tenants;
-    const elevatorCount = this.config.elevators;
-    
-    // Create initial tenant positions (most start on floor 1)
-    const tenantPositions = [];
-    for (let i = 0; i < tenantCount; i++) {
-      // 70% of tenants start on floor 1, 30% on random floors
-      const startFloor = Math.random() < 0.7 ? 1 : Math.floor(Math.random() * this.config.floors) + 1;
-      tenantPositions.push(startFloor);
-    }
-    
-    // Generate random elevator usage throughout the day
-    const activityLevel = this.config.tenantActivityLevel;
     const simulationDuration = this.config.simulationDuration;
+    const simulationHours = simulationDuration / (60 * 60 * 1000);
     
-    // Each tenant makes several elevator trips during the simulation
-    for (let i = 0; i < tenantCount; i++) {
-      // Number of trips depends on activity level (3-15 trips)
-      const trips = Math.floor(3 + (activityLevel * 12));
+    // Calculate total requests for the simulation
+    const totalRequests = Math.round(this.hourlyRequests * simulationHours);
+    
+    console.log(`Generating ${totalRequests} tenant requests over ${simulationHours} hours`);
+    
+    // Generate random elevator requests throughout the simulation
+    for (let i = 0; i < totalRequests; i++) {
+      // Random time for this request (ensure they're spread throughout the simulation)
+      const requestTime = Math.floor(Math.random() * simulationDuration);
       
-      for (let trip = 0; trip < trips; trip++) {
-        // Random time for this trip
-        const tripTime = Math.floor(Math.random() * simulationDuration);
-        
-        // Determine destination floor (not current floor)
-        const currentFloor = tenantPositions[i];
-        let destinationFloor;
-        
-        do {
-          destinationFloor = Math.floor(Math.random() * this.config.floors) + 1;
-        } while (destinationFloor === currentFloor);
-        
-        // Update tenant position for next trip
-        tenantPositions[i] = destinationFloor;
-        
-        // Add step for this tenant trip
-        steps.push({
-          time: tripTime,
-          description: `Tenant ${i+1} requests elevator to floor ${destinationFloor}`,
-          action: (simulator) => {
-            // Choose a random elevator
-            const elevatorIndex = Math.floor(Math.random() * elevatorCount);
-            const elevator = simulator.elevators[elevatorIndex];
-            
-            // Create a virtual tenant request
-            console.log(`Tenant ${i+1} calling elevator ${elevatorIndex+1} to go to floor ${destinationFloor}`);
-            
-            // Request elevator with 'tenant' type for statistics
-            elevator.requestFloor(currentFloor, 'tenant');
-            
-            // Simulate tenant entering elevator and requesting destination
-            setTimeout(() => {
-              if (elevator.state.currentFloor === currentFloor && 
-                  elevator.state.doorState === 'OPEN') {
-                console.log(`Tenant ${i+1} entered elevator ${elevatorIndex+1} and requested floor ${destinationFloor}`);
-                elevator.requestFloor(destinationFloor, 'tenant');
-              } else {
-                console.log(`Tenant ${i+1} missed elevator ${elevatorIndex+1} or got impatient`);
-              }
-            }, 5000 / simulator.config.simulationSpeed);
-          }
-        });
-      }
+      // Random starting floor
+      const startFloor = Math.floor(Math.random() * this.config.floors) + 1;
+      
+      // Random destination floor (not the same as start)
+      let destinationFloor;
+      do {
+        destinationFloor = Math.floor(Math.random() * this.config.floors) + 1;
+      } while (destinationFloor === startFloor);
+      
+      // Add step for this elevator request
+      steps.push({
+        time: requestTime,
+        description: `Building occupant requests elevator to floor ${destinationFloor}`,
+        action: (simulator) => {
+          // Choose a random elevator
+          const elevatorIndex = Math.floor(Math.random() * this.config.elevators);
+          const elevator = simulator.elevators[elevatorIndex];
+          
+          // Create a virtual tenant request
+          console.log(`Building occupant calling elevator ${elevatorIndex+1} to go to floor ${destinationFloor}`);
+          
+          // Request elevator with 'tenant' type for statistics
+          elevator.requestFloor(startFloor, 'tenant');
+          
+          // Simulate tenant entering elevator and requesting destination
+          setTimeout(() => {
+            if (elevator.state.currentFloor === startFloor && 
+                elevator.state.doorState === 'OPEN') {
+              console.log(`Building occupant entered elevator ${elevatorIndex+1} and requested floor ${destinationFloor}`);
+              elevator.requestFloor(destinationFloor, 'tenant');
+            } else {
+              console.log(`Building occupant missed elevator ${elevatorIndex+1} or got impatient`);
+            }
+          }, 5000 / simulator.config.simulationSpeed);
+        }
+      });
     }
     
     // Sort steps by time

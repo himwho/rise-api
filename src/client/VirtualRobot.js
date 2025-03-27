@@ -11,6 +11,10 @@ class VirtualRobot {
       name: 'VacuumBot',
       startFloor: 1,
       movementSpeed: 1, // meters per second
+      batteryCapacity: 5000, // mAh
+      batteryConsumptionRate: 10, // mAh per minute of operation
+      chargingRate: 100, // mAh per minute of charging
+      chargingFloor: 1, // Floor where the charging station is located
       ...config
     };
 
@@ -19,9 +23,11 @@ class VirtualRobot {
       currentFloor: this.config.startFloor,
       targetFloor: null,
       position: { x: 0, y: 0 }, // Position on current floor
-      status: 'IDLE', // IDLE, WAITING_FOR_ELEVATOR, ENTERING_ELEVATOR, IN_ELEVATOR, EXITING_ELEVATOR, MOVING_TO_DESTINATION
-      batteryLevel: 100,
+      status: 'IDLE', // IDLE, WAITING_FOR_ELEVATOR, ENTERING_ELEVATOR, IN_ELEVATOR, EXITING_ELEVATOR, MOVING_TO_DESTINATION, CHARGING
+      batteryLevel: this.config.batteryCapacity, // Start with full battery
+      batteryPercentage: 100,
       errorState: null,
+      lastBatteryUpdateTime: Date.now(),
     };
 
     this.elevatorConnection = null;
@@ -383,6 +389,94 @@ class VirtualRobot {
       console.log(`Robot ${this.config.name} recovered and continuing with next task`);
       this.processNextTask();
     }, 5000);
+  }
+
+  // Add a method to update battery level
+  updateBatteryLevel() {
+    const now = Date.now();
+    const elapsedMinutes = (now - this.state.lastBatteryUpdateTime) / 60000;
+    
+    if (this.state.status === 'CHARGING') {
+      // Charging - increase battery level
+      const chargeAmount = elapsedMinutes * this.config.chargingRate;
+      this.state.batteryLevel = Math.min(this.config.batteryCapacity, this.state.batteryLevel + chargeAmount);
+    } else if (this.state.status !== 'IDLE') {
+      // Discharging during operation
+      const dischargeAmount = elapsedMinutes * this.config.batteryConsumptionRate;
+      this.state.batteryLevel = Math.max(0, this.state.batteryLevel - dischargeAmount);
+    }
+    
+    // Update battery percentage
+    this.state.batteryPercentage = Math.round((this.state.batteryLevel / this.config.batteryCapacity) * 100);
+    
+    // Update last battery update time
+    this.state.lastBatteryUpdateTime = now;
+    
+    // Check if battery is critically low
+    if (this.state.batteryPercentage < 15 && this.state.status !== 'CHARGING') {
+      console.log(`Robot ${this.config.name} battery low (${this.state.batteryPercentage}%), returning to charging station`);
+      this.returnToChargingStation();
+    }
+    
+    return this.state.batteryPercentage;
+  }
+
+  // Add a method to return to charging station
+  returnToChargingStation() {
+    if (this.state.currentFloor === this.config.chargingFloor && this.state.status === 'IDLE') {
+      // Already at charging floor, start charging
+      this.startCharging();
+      return Promise.resolve();
+    }
+    
+    // Go to charging floor
+    console.log(`Robot ${this.config.name} returning to charging station on floor ${this.config.chargingFloor}`);
+    return this.goToFloor(this.config.chargingFloor)
+      .then(() => {
+        this.startCharging();
+      })
+      .catch(err => {
+        console.error(`Error returning to charging station:`, err);
+      });
+  }
+
+  // Add a method to start charging
+  startCharging() {
+    console.log(`Robot ${this.config.name} started charging`);
+    this.state.status = 'CHARGING';
+    
+    // Calculate time needed to fully charge
+    const remainingCapacity = this.config.batteryCapacity - this.state.batteryLevel;
+    const minutesToFullCharge = remainingCapacity / this.config.chargingRate;
+    
+    // Set a timer to finish charging
+    setTimeout(() => {
+      this.state.batteryLevel = this.config.batteryCapacity;
+      this.state.batteryPercentage = 100;
+      this.state.status = 'IDLE';
+      console.log(`Robot ${this.config.name} finished charging, battery at 100%`);
+    }, minutesToFullCharge * 60000);
+  }
+
+  // Add a method to check if the robot can complete a task with current battery
+  canCompleteTask(estimatedMinutes) {
+    // Update battery level first
+    this.updateBatteryLevel();
+    
+    // Calculate battery needed for the task
+    const batteryNeeded = estimatedMinutes * this.config.batteryConsumptionRate;
+    
+    // Add battery needed to return to charging station
+    const floorsToChargingStation = Math.abs(this.state.currentFloor - this.config.chargingFloor);
+    const returnBatteryNeeded = (floorsToChargingStation * 2) * this.config.batteryConsumptionRate;
+    
+    // Total battery needed
+    const totalBatteryNeeded = batteryNeeded + returnBatteryNeeded;
+    
+    console.log(`Battery check: Level ${this.state.batteryLevel}mAh, Need ${totalBatteryNeeded}mAh for ${estimatedMinutes} minutes of cleaning`);
+    
+    // Check if we have enough battery
+    return this.state.batteryLevel >= totalBatteryNeeded;
   }
 }
 

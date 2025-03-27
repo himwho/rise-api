@@ -8,9 +8,11 @@ class VirtualElevator {
   constructor(config = {}) {
     // Default configuration
     this.config = {
+      id: 'elevator-1',
       floors: 10,
       doorOpenTime: 5000, // ms
-      floorTravelTime: 2000, // ms per floor
+      floorTravelTime: 3000, // 3 seconds per floor
+      prioritizationMode: 'equal', // 'equal', 'tenant-priority', or 'bot-priority'
       ...config
     };
 
@@ -108,6 +110,7 @@ class VirtualElevator {
       }
       
       this.totalRequests++;
+      
       if (requesterType === 'bot') {
         this.botRequests++;
         console.log(`Elevator ${this.config.id} bot request count: ${this.botRequests}`);
@@ -116,10 +119,11 @@ class VirtualElevator {
       }
     }
 
+    // Add to floor requests
     this.state.floorRequests.add(floorNumber);
     this.updateTargetFloor();
     
-    // Track bot requests with timestamps for priority handling
+    // Track bot and tenant requests with timestamps for priority handling
     if (requesterType === 'bot') {
       if (!this.pendingBotRequests) {
         this.pendingBotRequests = [];
@@ -131,6 +135,15 @@ class VirtualElevator {
       });
       
       console.log(`Added bot request for floor ${floorNumber} to priority queue`);
+    } else if (requesterType === 'tenant') {
+      if (!this.pendingTenantRequests) {
+        this.pendingTenantRequests = [];
+      }
+      
+      this.pendingTenantRequests.push({
+        floor: floorNumber,
+        timestamp: Date.now()
+      });
     }
     
     return true;
@@ -148,28 +161,57 @@ class VirtualElevator {
       return;
     }
     
-    // ALWAYS check for bot requests first, regardless of wait time
-    if (this.pendingBotRequests && this.pendingBotRequests.length > 0) {
-      // Always prioritize the first bot request
-      const botRequest = this.pendingBotRequests[0];
-      console.log(`Prioritizing bot request for floor ${botRequest.floor}`);
-      
-      this.state.targetFloor = botRequest.floor;
-      this.moveToTargetFloor();
-      return;
+    // Handle different prioritization modes
+    switch (this.config.prioritizationMode) {
+      case 'bot-priority':
+        // Always prioritize bot requests first
+        if (this.pendingBotRequests && this.pendingBotRequests.length > 0) {
+          const botRequest = this.pendingBotRequests[0];
+          console.log(`Prioritizing bot request for floor ${botRequest.floor} (bot-priority mode)`);
+          
+          this.state.targetFloor = botRequest.floor;
+          this.moveToTargetFloor();
+          return;
+        }
+        break;
+        
+      case 'tenant-priority':
+        // Only handle bot requests if there are no tenant requests
+        if (this.pendingTenantRequests && this.pendingTenantRequests.length > 0) {
+          const tenantRequest = this.pendingTenantRequests[0];
+          console.log(`Prioritizing tenant request for floor ${tenantRequest.floor} (tenant-priority mode)`);
+          
+          this.state.targetFloor = tenantRequest.floor;
+          this.moveToTargetFloor();
+          return;
+        }
+        break;
+        
+      case 'equal':
+      default:
+        // Equal priority - use the standard algorithm
+        break;
     }
     
+    // Standard algorithm for handling requests (used for 'equal' mode or as fallback)
     // Convert set to array for easier processing
     const requests = Array.from(this.state.floorRequests);
     
-    // If we're already at one of the requested floors, prioritize that
-    if (requests.includes(this.state.currentFloor)) {
-      this.state.targetFloor = this.state.currentFloor;
+    // If we're stationary, go to the closest floor
+    if (this.state.direction === 'STATIONARY') {
+      let closestFloor = requests[0];
+      let minDistance = Math.abs(closestFloor - this.state.currentFloor);
       
-      // If door is closed, open it
-      if (this.state.doorState === 'CLOSED') {
-        this.openDoor();
+      for (const floor of requests) {
+        const distance = Math.abs(floor - this.state.currentFloor);
+        if (distance < minDistance) {
+          minDistance = distance;
+          closestFloor = floor;
+        }
       }
+      
+      this.state.targetFloor = closestFloor;
+      this.moveToTargetFloor();
       return;
     }
     
@@ -254,12 +296,13 @@ class VirtualElevator {
       this.objectDictionary[0x6000].value &= ~0x20; // Clear direction up bit
       this.objectDictionary[0x6000].value &= ~0x40; // Clear direction down bit
       
-      // Remove this floor from requests
-      this.state.floorRequests.delete(this.state.currentFloor);
-      
-      // Remove from pending bot requests
+      // Remove from pending bot and tenant requests
       if (this.pendingBotRequests) {
         this.pendingBotRequests = this.pendingBotRequests.filter(req => req.floor !== this.state.currentFloor);
+      }
+      
+      if (this.pendingTenantRequests) {
+        this.pendingTenantRequests = this.pendingTenantRequests.filter(req => req.floor !== this.state.currentFloor);
       }
       
       // Notify listeners
