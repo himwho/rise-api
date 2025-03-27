@@ -154,8 +154,8 @@ class VirtualRobot {
       return Promise.reject(new Error('Not connected to elevator'));
     }
     
-    // Request elevator to current floor
-    this.elevatorConnection.requestFloor(this.state.currentFloor);
+    // Request elevator to current floor, passing 'bot' as the requester type
+    this.elevatorConnection.requestFloor(this.state.currentFloor, 'bot');
     
     // Wait for elevator to arrive with door open
     return new Promise((resolve, reject) => {

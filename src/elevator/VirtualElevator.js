@@ -91,9 +91,19 @@ class VirtualElevator {
   }
 
   // Elevator control methods
-  requestFloor(floorNumber) {
+  requestFloor(floorNumber, requesterType) {
     if (floorNumber < 1 || floorNumber > this.config.floors) {
       throw new Error(`Invalid floor number: ${floorNumber}`);
+    }
+
+    // Track statistics if we're tracking by requester type
+    if (this.totalRequests !== undefined && requesterType) {
+      this.totalRequests++;
+      if (requesterType === 'bot') {
+        this.botRequests++;
+      } else if (requesterType === 'tenant') {
+        this.tenantRequests++;
+      }
     }
 
     this.state.floorRequests.add(floorNumber);

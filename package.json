@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node src/index.js",
     "simulate": "node src/index.js",
+    "clean": "node src/cli.js",
     "test": "jest"
   },
   "keywords": [
