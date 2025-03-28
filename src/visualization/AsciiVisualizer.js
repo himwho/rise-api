@@ -237,9 +237,19 @@ class AsciiVisualizer {
     lines.push('=== Elevator Simulation Visualization ===');
     lines.push('');
     
+    // Get cleaned floors from robots
+    const cleanedFloors = new Set();
+    this.simulator.robots.forEach(robot => {
+      if (robot.visitedFloors) {
+        robot.visitedFloors.forEach(floor => cleanedFloors.add(floor));
+      }
+    });
+    
     // Add floor numbers and elevator shafts
     for (let floor = this.config.floors; floor >= 1; floor--) {
-      let floorLine = `${floor.toString().padStart(2)} |`;
+      // Mark cleaned floors with a 'C'
+      const cleanedMarker = cleanedFloors.has(floor) ? 'C' : ' ';
+      let floorLine = `${floor.toString().padStart(2)} ${cleanedMarker}|`;
       
       // Add waiting tenants on the left
       const waitingTenants = this.simulator.tenants ? 
@@ -293,46 +303,36 @@ class AsciiVisualizer {
       // Add robots on this floor
       const robotsOnFloor = this.state.robots.filter(r => r.currentFloor === floor);
       if (robotsOnFloor.length > 0) {
-        floorLine += ' ' + robotsOnFloor.map(r => 'R').join('');
+        floorLine += ' ' + robotsOnFloor.map(r => {
+          // Show robot status with different symbols
+          if (r.status === 'CLEANING') return 'R*';
+          if (r.status === 'CHARGING') return 'R+';
+          return 'R';
+        }).join(' ');
       }
       
       lines.push(floorLine);
     }
     
-    // Add floor
-    lines.push('---' + '-'.repeat(this.config.elevators * 8));
-    
     // Add legend
     lines.push('');
-    lines.push('Legend: T = Tenant waiting, R = Robot, [|||] = Closed elevator, [| |] = Open elevator');
+    lines.push('Legend: C = Cleaned Floor, T = Waiting Tenant, R* = Robot Cleaning, R+ = Robot Charging');
     
     // Add elevator status
     lines.push('');
     lines.push('Elevator Status:');
     this.state.elevators.forEach((elevator, i) => {
-      // Ensure elevator state is valid
-      const currentFloor = elevator.currentFloor !== null ? elevator.currentFloor : 'unknown';
-      const doorState = elevator.doorState || 'unknown';
-      const direction = elevator.direction || 'unknown';
+      lines.push(`  Elevator ${i+1}: Floor ${elevator.currentFloor}, Door ${elevator.doorState}, Direction ${elevator.direction}`);
       
-      lines.push(`  Elevator ${i+1}: Floor ${currentFloor}, Door ${doorState}, Direction ${direction}`);
-      lines.push(`    Requests: ${Array.from(elevator.requests).join(', ') || 'None'}`);
+      // Add requests
+      const requests = Array.from(elevator.requests || []).sort((a, b) => a - b);
+      if (requests.length > 0) {
+        lines.push(`    Requests: ${requests.join(', ')}`);
+      }
       
-      // Show occupants and their destinations
+      // Add occupants
       if (elevator.occupants && elevator.occupants.length > 0) {
-        lines.push(`    Occupants (${elevator.occupants.length}/${this.simulator.elevators[i].config.maxOccupants}):`);
-        elevator.occupants.forEach(occupant => {
-          // Check if occupant is a valid object with an id
-          if (occupant && typeof occupant === 'object' && occupant.id) {
-            lines.push(`      ${occupant.id.substring(0, 10)}... (${occupant.type}) → Floor ${occupant.destination || '?'}`);
-          } else if (typeof occupant === 'string') {
-            // Handle case where occupant is just a string ID
-            lines.push(`      ${occupant.substring(0, 10)}... → Floor ?`);
-          } else {
-            // Handle invalid occupant
-            lines.push(`      Unknown occupant`);
-          }
-        });
+        lines.push(`    Occupants: ${elevator.occupants.map(o => o.id).join(', ')}`);
       } else {
         lines.push(`    Occupants: None`);
       }
@@ -343,7 +343,20 @@ class AsciiVisualizer {
     lines.push('Robot Status:');
     this.state.robots.forEach((robot, i) => {
       lines.push(`  Robot ${i+1}: Floor ${robot.currentFloor}, Status ${robot.status}, Battery ${robot.batteryLevel}%`);
+      
+      // Add cleaned floors
+      const visitedFloors = this.simulator.robots[i].visitedFloors;
+      if (visitedFloors && visitedFloors.size > 0) {
+        lines.push(`    Cleaned Floors: ${Array.from(visitedFloors).sort((a, b) => a - b).join(', ')}`);
+      }
     });
+    
+    // Add cleaning progress
+    lines.push('');
+    const totalFloors = this.config.floors;
+    const cleanedCount = cleanedFloors.size;
+    const cleaningProgress = (cleanedCount / totalFloors) * 100;
+    lines.push(`Cleaning Progress: ${cleanedCount}/${totalFloors} floors (${cleaningProgress.toFixed(1)}%)`);
     
     // Add tenant count
     lines.push('');

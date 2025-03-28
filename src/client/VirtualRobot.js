@@ -607,13 +607,14 @@ class VirtualRobot {
     return true;
   }
 
-  // Fix the cleanCurrentFloor method to properly handle completion
+  // Fix the cleanCurrentFloor method to ensure full cleaning time
   cleanCurrentFloor() {
     const currentFloor = this.state.currentFloor;
     
     // Update status to cleaning
     this.state.status = 'CLEANING';
     console.log(`Robot ${this.config.name} cleaning floor ${currentFloor} (status: ${this.state.status})`);
+    console.log(`Cleaning will take ${this.config.cleaningTimePerFloor / 1000} seconds`);
     
     // Mark this floor as visited
     if (!this.visitedFloors) {
@@ -624,9 +625,13 @@ class VirtualRobot {
     // Update battery level
     this.updateBatteryLevel();
     
+    // Store the cleaning start time
+    this.cleaningStartTime = Date.now();
+    
     // Set a timer for the cleaning duration
-    setTimeout(() => {
-      console.log(`Robot ${this.config.name} finished cleaning floor ${currentFloor}`);
+    this.cleaningTimer = setTimeout(() => {
+      const actualCleaningTime = Date.now() - this.cleaningStartTime;
+      console.log(`Robot ${this.config.name} finished cleaning floor ${currentFloor} (took ${actualCleaningTime / 1000} seconds)`);
       
       // Update battery level again after cleaning
       this.updateBatteryLevel();
@@ -640,7 +645,7 @@ class VirtualRobot {
       
       // Move to next floor
       this.moveToNextFloor();
-    }, this.config.cleaningTimePerFloor || 60000); // Default to 1 minute if not specified
+    }, this.config.cleaningTimePerFloor); // Use the full cleaning time
   }
 
   // Fix the moveToNextFloor method to properly handle floor transitions
