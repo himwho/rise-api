@@ -21,9 +21,13 @@ class Simulator {
     
     this.elevators = [];
     this.robots = [];
+    this.tenants = [];
     this.time = 0;
     this.running = false;
     this.eventLog = [];
+    this.currentScenario = null;
+    this.currentStep = 0;
+    this.startTime = null;
     
     this.initialize();
     
@@ -34,6 +38,9 @@ class Simulator {
         elevators: this.config.elevatorCount,
         refreshRate: 1000 / this.config.simulationSpeed
       });
+      this.visualizer.initialize(this);
+    } else {
+      this.visualizer = null;
     }
   }
   
@@ -53,8 +60,8 @@ class Simulator {
     // Create robots
     for (let i = 0; i < this.config.robotCount; i++) {
       const robot = new VirtualRobot({
-        name: `robot-${i+1}`,
-        startFloor: Math.floor(Math.random() * this.config.floors) + 1
+        name: `Robot-${i+1}`,
+        type: 'cleaner'
       });
       
       // Connect robot to first elevator

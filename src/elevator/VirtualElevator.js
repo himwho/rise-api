@@ -10,8 +10,8 @@ class VirtualElevator {
     this.config = {
       id: 'elevator-1',
       floors: 10,
-      doorOpenTime: 10000, // Increased from 5000ms to 10000ms (10 seconds)
-      floorTravelTime: 3000, // 3 seconds per floor
+      doorOpenTime: 5000, // 5000ms (5 seconds)
+      floorTravelTime: 2000, // 2 seconds per floor
       prioritizationMode: 'equal', // 'equal', 'tenant-priority', or 'bot-priority'
       maxOccupants: 8, // Maximum number of occupants in the elevator
       ...config
@@ -29,6 +29,9 @@ class VirtualElevator {
       floorRequests: new Set(),
       occupants: [], // Track occupants and their destinations
     };
+
+    // Track waiting tenants
+    this.waitingTenants = [];
 
     // CANopen Object Dictionary (simplified for simulation)
     this.objectDictionary = {
@@ -101,6 +104,10 @@ class VirtualElevator {
     }
 
     console.log(`Elevator ${this.config.id} received request for floor ${floorNumber} from ${requesterType || 'unknown'}`);
+    
+    // Debug state before processing request
+    this.debugState();
+
     console.log(`Elevator state: Floor ${this.state.currentFloor}, Door ${this.state.doorState}, Direction ${this.state.direction}, In Motion: ${this.state.inMotion}`);
     console.log(`Current requests: ${Array.from(this.state.floorRequests).join(', ')}`);
 
@@ -119,6 +126,21 @@ class VirtualElevator {
       // Add occupant to the elevator with destination
       this.addOccupant(occupantId || `occupant-${Date.now()}`, requesterType, destination);
       console.log(`Elevator ${this.config.id} is already at floor ${floorNumber} with door open - immediate pickup for ${requesterType || 'occupant'}`);
+    } else if (requesterType === 'tenant' && floorNumber !== this.state.currentFloor) {
+      // Track waiting tenant
+      const tenantId = occupantId || `tenant-${Date.now()}`;
+      
+      // Add to waiting tenants if not already there
+      if (!this.waitingTenants.some(t => t.id === tenantId)) {
+        this.waitingTenants.push({
+          id: tenantId,
+          floor: floorNumber,
+          destination: destination,
+          requestTime: Date.now()
+        });
+        
+        console.log(`Added tenant ${tenantId} to waiting list for floor ${floorNumber}`);
+      }
     }
 
     // Track statistics
@@ -172,13 +194,16 @@ class VirtualElevator {
       console.log(`Added tenant request for floor ${floorNumber} to queue`);
     }
     
-    // Update target floor immediately if not in motion
-    if (!this.state.inMotion) {
+    // Update target floor immediately if not in motion and no target
+    if (!this.state.inMotion && (this.state.targetFloor === null || this.state.targetFloor === this.state.currentFloor)) {
       console.log(`Elevator ${this.config.id} updating target floor after request`);
       this.updateTargetFloor();
     } else {
-      console.log(`Elevator ${this.config.id} is in motion, will process request for floor ${floorNumber} after current trip`);
+      console.log(`Elevator ${this.config.id} is in motion or has a target, will process request for floor ${floorNumber} after current trip`);
     }
+    
+    // Debug state after processing request
+    this.debugState();
     
     return true;
   }
@@ -187,115 +212,50 @@ class VirtualElevator {
     // If no requests, nothing to do
     if (this.state.floorRequests.size === 0) {
       this.state.targetFloor = null;
+      this.state.direction = 'STATIONARY';
+      this.notifyListeners('directionChanged', this.state.direction);
+      console.log(`Elevator ${this.config.id} has no pending requests`);
       return;
     }
     
-    // If already moving, don't change target
+    // Convert requests to array for easier processing
+    const requests = Array.from(this.state.floorRequests);
+    console.log(`Elevator ${this.config.id} processing requests: ${requests.join(', ')}`);
+    
+    // If already moving, don't change target unless we're at the target floor
     if (this.state.inMotion) {
       console.log(`Elevator ${this.config.id} is already in motion to floor ${this.state.targetFloor}`);
       return;
     }
     
-    // Handle different prioritization modes for initial request selection
-    if (this.config.prioritizationMode !== 'equal' && !this.state.direction) {
-      switch (this.config.prioritizationMode) {
-        case 'bot-priority':
-          // Always prioritize bot requests first
-          if (this.pendingBotRequests && this.pendingBotRequests.length > 0) {
-            const botRequest = this.pendingBotRequests[0];
-            console.log(`Prioritizing bot request for floor ${botRequest.floor} (bot-priority mode)`);
-            
-            this.state.targetFloor = botRequest.floor;
-            this.moveToTargetFloor();
-            return;
-          }
-          break;
-          
-        case 'tenant-priority':
-          // Only handle bot requests if there are no tenant requests
-          if (this.pendingTenantRequests && this.pendingTenantRequests.length > 0) {
-            const tenantRequest = this.pendingTenantRequests[0];
-            console.log(`Prioritizing tenant request for floor ${tenantRequest.floor} (tenant-priority mode)`);
-            
-            this.state.targetFloor = tenantRequest.floor;
-            this.moveToTargetFloor();
-            return;
-          }
-          break;
-      }
-    }
-    
-    // Convert set to array for easier processing
-    const requests = Array.from(this.state.floorRequests);
-    
-    console.log(`Elevator ${this.config.id} processing requests: ${requests.join(', ')}`);
-    
-    // If we're already at one of the requested floors, prioritize that
-    if (requests.includes(this.state.currentFloor) && this.state.doorState === 'CLOSED') {
-      console.log(`Elevator ${this.config.id} is already at requested floor ${this.state.currentFloor}, opening doors`);
-      this.state.targetFloor = this.state.currentFloor;
-      this.openDoor();
-      return;
-    }
-    
-    // SELECTIVE COLLECTIVE OPERATION LOGIC
-    
-    // If we're stationary, determine the best direction to go
-    if (this.state.direction === 'STATIONARY') {
-      // Find requests above and below current floor
-      const requestsAbove = requests.filter(floor => floor > this.state.currentFloor);
-      const requestsBelow = requests.filter(floor => floor < this.state.currentFloor);
-      
-      // Determine which direction to go based on closest request
-      if (requestsAbove.length > 0 && requestsBelow.length > 0) {
-        // Requests in both directions - go to the closest one
-        const closestAbove = Math.min(...requestsAbove);
-        const closestBelow = Math.max(...requestsBelow);
-        
-        const distanceAbove = closestAbove - this.state.currentFloor;
-        const distanceBelow = this.state.currentFloor - closestBelow;
-        
-        if (distanceAbove <= distanceBelow) {
-          this.state.direction = 'UP';
-          this.state.targetFloor = closestAbove;
-        } else {
-          this.state.direction = 'DOWN';
-          this.state.targetFloor = closestBelow;
-        }
-      } else if (requestsAbove.length > 0) {
-        // Only requests above - go up
-        this.state.direction = 'UP';
-        this.state.targetFloor = Math.min(...requestsAbove);
-      } else if (requestsBelow.length > 0) {
-        // Only requests below - go down
-        this.state.direction = 'DOWN';
-        this.state.targetFloor = Math.max(...requestsBelow);
-      }
-      
-      console.log(`Elevator ${this.config.id} starting new run in direction ${this.state.direction} to floor ${this.state.targetFloor}`);
+    // If we have a target but aren't moving yet, keep that target
+    if (this.state.targetFloor !== null && this.state.targetFloor !== this.state.currentFloor) {
+      console.log(`Elevator ${this.config.id} already has target floor ${this.state.targetFloor}`);
       this.moveToTargetFloor();
       return;
     }
     
-    // If we're already moving in a direction, continue in that direction
-    // until there are no more requests in that direction
+    // Implement Selective Collective Operation logic
+    
+    // If we have a direction, continue in that direction if there are requests
     if (this.state.direction === 'UP') {
-      // Find all floors above current floor that have been requested
+      // Find floors above current floor
       const floorsAbove = requests.filter(floor => floor > this.state.currentFloor).sort((a, b) => a - b);
       
       if (floorsAbove.length > 0) {
-        // Continue going up to the next requested floor
+        // Continue going up to the next floor above
         this.state.targetFloor = floorsAbove[0];
         console.log(`Elevator ${this.config.id} continuing UP to floor ${this.state.targetFloor}`);
         this.moveToTargetFloor();
         return;
       } else {
-        // No more requests above, check if there are any below
+        // No more floors above, change direction if there are floors below
         const floorsBelow = requests.filter(floor => floor < this.state.currentFloor).sort((a, b) => b - a);
         
         if (floorsBelow.length > 0) {
           // Change direction to go down
           this.state.direction = 'DOWN';
+          this.notifyListeners('directionChanged', this.state.direction);
           this.state.targetFloor = floorsBelow[0];
           console.log(`Elevator ${this.config.id} changing direction to DOWN, going to floor ${this.state.targetFloor}`);
           this.moveToTargetFloor();
@@ -303,58 +263,87 @@ class VirtualElevator {
         }
       }
     } else if (this.state.direction === 'DOWN') {
-      // Find all floors below current floor that have been requested
+      // Find floors below current floor
       const floorsBelow = requests.filter(floor => floor < this.state.currentFloor).sort((a, b) => b - a);
       
       if (floorsBelow.length > 0) {
-        // Continue going down to the next requested floor
+        // Continue going down to the next floor below
         this.state.targetFloor = floorsBelow[0];
         console.log(`Elevator ${this.config.id} continuing DOWN to floor ${this.state.targetFloor}`);
         this.moveToTargetFloor();
         return;
       } else {
-        // No more requests below, check if there are any above
+        // No more floors below, change direction if there are floors above
         const floorsAbove = requests.filter(floor => floor > this.state.currentFloor).sort((a, b) => a - b);
         
         if (floorsAbove.length > 0) {
           // Change direction to go up
           this.state.direction = 'UP';
+          this.notifyListeners('directionChanged', this.state.direction);
           this.state.targetFloor = floorsAbove[0];
           console.log(`Elevator ${this.config.id} changing direction to UP, going to floor ${this.state.targetFloor}`);
           this.moveToTargetFloor();
           return;
         }
       }
-    }
-    
-    // If we get here, there are requests but they're not in a clear pattern
-    // Just pick the closest one
-    let closestFloor = requests[0];
-    let minDistance = Math.abs(closestFloor - this.state.currentFloor);
-    
-    for (const floor of requests) {
-      const distance = Math.abs(floor - this.state.currentFloor);
-      if (distance < minDistance) {
-        minDistance = distance;
-        closestFloor = floor;
+    } else {
+      // No current direction (STATIONARY), pick the closest floor
+      let closestFloor = requests[0];
+      let minDistance = Math.abs(closestFloor - this.state.currentFloor);
+      
+      for (const floor of requests) {
+        const distance = Math.abs(floor - this.state.currentFloor);
+        if (distance < minDistance) {
+          minDistance = distance;
+          closestFloor = floor;
+        }
       }
+      
+      // Set direction based on the selected floor
+      this.state.direction = closestFloor > this.state.currentFloor ? 'UP' : 'DOWN';
+      if (closestFloor === this.state.currentFloor) {
+        this.state.direction = 'STATIONARY';
+      }
+      
+      this.notifyListeners('directionChanged', this.state.direction);
+      this.state.targetFloor = closestFloor;
+      console.log(`Elevator ${this.config.id} starting from STATIONARY, going ${this.state.direction} to floor ${this.state.targetFloor}`);
+      this.moveToTargetFloor();
+      return;
     }
     
-    console.log(`Elevator ${this.config.id} selecting closest floor ${closestFloor}`);
+    // If we get here, there's a problem with the request logic
+    console.error(`Elevator ${this.config.id} couldn't determine next floor. Current floor: ${this.state.currentFloor}, Requests: ${requests.join(', ')}`);
     
-    // Set direction based on the selected floor
-    this.state.direction = closestFloor > this.state.currentFloor ? 'UP' : 'DOWN';
-    this.state.targetFloor = closestFloor;
-    this.moveToTargetFloor();
+    // As a fallback, just pick the first request
+    if (requests.length > 0) {
+      this.state.targetFloor = requests[0];
+      this.state.direction = this.state.targetFloor > this.state.currentFloor ? 'UP' : 'DOWN';
+      if (this.state.targetFloor === this.state.currentFloor) {
+        this.state.direction = 'STATIONARY';
+      }
+      
+      this.notifyListeners('directionChanged', this.state.direction);
+      console.log(`Elevator ${this.config.id} fallback: going to floor ${this.state.targetFloor}`);
+      this.moveToTargetFloor();
+    } else {
+      // This shouldn't happen, but just in case
+      this.state.targetFloor = null;
+      this.state.direction = 'STATIONARY';
+      this.notifyListeners('directionChanged', this.state.direction);
+      console.log(`Elevator ${this.config.id} has no pending requests (fallback)`);
+    }
   }
 
   moveToTargetFloor() {
     if (this.state.targetFloor === null) {
+      console.log(`Elevator ${this.config.id} has no target floor to move to`);
       return;
     }
     
     // If already at target floor, just open the door
     if (this.state.currentFloor === this.state.targetFloor) {
+      console.log(`Elevator ${this.config.id} is already at target floor ${this.state.targetFloor}`);
       if (this.state.doorState === 'CLOSED') {
         this.openDoor();
       }
@@ -364,6 +353,7 @@ class VirtualElevator {
     // Determine direction
     const direction = this.state.targetFloor > this.state.currentFloor ? 'UP' : 'DOWN';
     this.state.direction = direction;
+    this.notifyListeners('directionChanged', direction);
     
     // Update object dictionary
     if (direction === 'UP') {
@@ -373,8 +363,6 @@ class VirtualElevator {
       this.objectDictionary[0x6000].value &= ~0x20; // Clear direction up bit
       this.objectDictionary[0x6000].value |= 0x40; // Set direction down bit
     }
-    
-    this.notifyListeners('directionChanged', direction);
     
     // Close door if open
     if (this.state.doorState === 'OPEN' || this.state.doorState === 'OPENING') {
@@ -464,40 +452,93 @@ class VirtualElevator {
   }
 
   openDoor() {
-    if (this.state.doorState === 'OPEN' || this.state.doorState === 'OPENING') {
-      return;
+    if (this.state.doorState === 'OPEN') {
+      return; // Door already open
     }
     
-    clearTimeout(this.doorTimer);
+    console.log(`Elevator ${this.config.id} opening door at floor ${this.state.currentFloor}`);
+    
+    // Set door state to opening
     this.state.doorState = 'OPENING';
     this.objectDictionary[0x6000].value |= 0x2; // Set door opening bit
+    this.objectDictionary[0x6000].value &= ~0x10; // Clear door closed bit
+    
     this.notifyListeners('doorStateChanged', this.state.doorState);
     
-    // Simulate door opening
+    // Simulate door opening time
     setTimeout(() => {
       this.state.doorState = 'OPEN';
       this.objectDictionary[0x6000].value &= ~0x2; // Clear door opening bit
       this.objectDictionary[0x6000].value |= 0x1; // Set door open bit
+      
       this.notifyListeners('doorStateChanged', this.state.doorState);
+      
+      // Clean up the request for this floor
+      this.state.floorRequests.delete(this.state.currentFloor);
+      
+      // Clean up any stale requests
+      this.cleanupStaleRequests();
+      
+      // Check for waiting tenants at this floor
+      const waitingTenantsAtThisFloor = this.waitingTenants.filter(t => t.floor === this.state.currentFloor);
+      if (waitingTenantsAtThisFloor.length > 0) {
+        console.log(`${waitingTenantsAtThisFloor.length} tenants waiting at floor ${this.state.currentFloor}`);
+        
+        // Keep door open longer for tenants to enter
+        if (this.doorTimer) {
+          clearTimeout(this.doorTimer);
+        }
+        
+        // Set a longer door open time when tenants are waiting
+        this.doorTimer = setTimeout(() => {
+          // Only close the door if there are no obstructions
+          if (!this.state.doorObstruction) {
+            this.closeDoor();
+          }
+        }, this.config.doorOpenTime * 2);
+      } else {
+        // Set a timer to close the door after a delay
+        if (this.doorTimer) {
+          clearTimeout(this.doorTimer);
+        }
+        
+        this.doorTimer = setTimeout(() => {
+          // Only close the door if there are no obstructions
+          if (!this.state.doorObstruction) {
+            this.closeDoor();
+          }
+        }, this.config.doorOpenTime);
+      }
     }, 1500);
   }
 
   closeDoor() {
-    if (this.state.doorState === 'CLOSED' || this.state.doorState === 'CLOSING' || this.state.doorObstruction) {
-      return;
+    if (this.state.doorState === 'CLOSED') {
+      return; // Door already closed
     }
     
+    console.log(`Elevator ${this.config.id} closing door at floor ${this.state.currentFloor}`);
+    
+    // Set door state to closing
     this.state.doorState = 'CLOSING';
-    this.objectDictionary[0x6000].value &= ~0x1; // Clear door open bit
     this.objectDictionary[0x6000].value |= 0x8; // Set door closing bit
+    this.objectDictionary[0x6000].value &= ~0x1; // Clear door open bit
+    
     this.notifyListeners('doorStateChanged', this.state.doorState);
     
-    // Simulate door closing
+    // Simulate door closing time
     setTimeout(() => {
       this.state.doorState = 'CLOSED';
       this.objectDictionary[0x6000].value &= ~0x8; // Clear door closing bit
       this.objectDictionary[0x6000].value |= 0x10; // Set door closed bit
+      
       this.notifyListeners('doorStateChanged', this.state.doorState);
+      
+      // If we have a target floor different from current floor, start moving
+      if (this.state.targetFloor !== null && this.state.targetFloor !== this.state.currentFloor && !this.state.inMotion) {
+        console.log(`Elevator ${this.config.id} door closed, starting movement to floor ${this.state.targetFloor}`);
+        this.startMovement();
+      }
     }, 1500);
   }
 
@@ -590,6 +631,12 @@ class VirtualElevator {
       const occupant = this.state.occupants[index];
       console.log(`Occupant ${occupantId} exited elevator at floor ${this.state.currentFloor}, entered at floor ${occupant.enteredAt}`);
       this.state.occupants.splice(index, 1);
+      
+      // Remove from waiting tenants if present
+      this.waitingTenants = this.waitingTenants.filter(t => t.id !== occupantId);
+      
+      // Clean up any stale requests
+      this.cleanupStaleRequests();
     }
   }
 
@@ -609,6 +656,54 @@ class VirtualElevator {
     } else {
       console.log(`Warning: Tried to set destination for occupant ${occupantId} who is not in the elevator`);
     }
+  }
+
+  // Add a method to clean up stale requests
+  cleanupStaleRequests() {
+    // Check if there are any requests for the current floor
+    if (this.state.floorRequests.has(this.state.currentFloor)) {
+      console.log(`Cleaning up request for current floor ${this.state.currentFloor}`);
+      this.state.floorRequests.delete(this.state.currentFloor);
+    }
+    
+    // Check if there are any requests that don't have corresponding occupants
+    const occupantDestinations = this.state.occupants.map(o => o.destination);
+    
+    // Get all requests that aren't for the current floor and aren't occupant destinations
+    const staleRequests = Array.from(this.state.floorRequests).filter(floor => 
+      floor !== this.state.currentFloor && !occupantDestinations.includes(floor)
+    );
+    
+    // Check if any of these requests are stale (no waiting tenants)
+    staleRequests.forEach(floor => {
+      // Check if there are any waiting tenants for this floor
+      const waitingTenants = this.waitingTenants ? this.waitingTenants.filter(t => t.floor === floor) : [];
+      
+      if (waitingTenants.length === 0) {
+        console.log(`Cleaning up stale request for floor ${floor} (no waiting tenants)`);
+        this.state.floorRequests.delete(floor);
+      }
+    });
+  }
+
+  // Add a debug method to log the elevator state
+  debugState() {
+    console.log(`\n=== Elevator ${this.config.id} Debug State ===`);
+    console.log(`Current Floor: ${this.state.currentFloor}`);
+    console.log(`Target Floor: ${this.state.targetFloor}`);
+    console.log(`Door State: ${this.state.doorState}`);
+    console.log(`Direction: ${this.state.direction}`);
+    console.log(`In Motion: ${this.state.inMotion}`);
+    console.log(`Floor Requests: ${Array.from(this.state.floorRequests).join(', ')}`);
+    console.log(`Occupants: ${this.state.occupants.length}`);
+    this.state.occupants.forEach(o => {
+      console.log(`  - ${o.id} (${o.type}): Destination ${o.destination}`);
+    });
+    console.log(`Waiting Tenants: ${this.waitingTenants.length}`);
+    this.waitingTenants.forEach(t => {
+      console.log(`  - ${t.id}: Floor ${t.floor}, Destination ${t.destination}`);
+    });
+    console.log('===================================\n');
   }
 }
 

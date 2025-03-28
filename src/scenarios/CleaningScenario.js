@@ -346,32 +346,24 @@ class CleaningScenario {
           const elevatorIndex = Math.floor(Math.random() * this.config.elevators);
           const elevator = simulator.elevators[elevatorIndex];
           
-          // Create a virtual tenant request
+          // Create a virtual tenant
+          const VirtualTenant = require('../client/VirtualTenant');
+          const tenant = new VirtualTenant({
+            id: tenantId,
+            startFloor: startFloor,
+            destinationFloor: destinationFloor,
+            patience: 180000 / simulator.config.simulationSpeed // Scale patience with simulation speed
+          });
+          
+          // Connect tenant to elevator
           console.log(`Building occupant ${tenantId} calling elevator ${elevatorIndex+1} from floor ${startFloor} to go to floor ${destinationFloor}`);
+          tenant.connectToElevator(elevator);
           
-          // Request elevator with 'tenant' type for statistics and pass the tenant ID and destination
-          elevator.requestFloor(startFloor, 'tenant', tenantId, destinationFloor);
-          
-          // Simulate tenant entering elevator and requesting destination
-          setTimeout(() => {
-            if (elevator.state.currentFloor === startFloor && 
-                elevator.state.doorState === 'OPEN' &&
-                elevator.isOccupantInElevator(tenantId)) {
-              console.log(`Building occupant ${tenantId} entered elevator ${elevatorIndex+1} and requested floor ${destinationFloor}`);
-              
-              // Set the destination for this occupant
-              elevator.setOccupantDestination(tenantId, destinationFloor);
-              
-              // Request the destination floor
-              elevator.requestFloor(destinationFloor, 'tenant', tenantId);
-            } else if (elevator.state.currentFloor === startFloor && 
-                       elevator.state.doorState === 'OPEN' &&
-                       elevator.state.occupants.length >= elevator.config.maxOccupants) {
-              console.log(`Building occupant ${tenantId} couldn't enter elevator ${elevatorIndex+1} because it's full`);
-            } else {
-              console.log(`Building occupant ${tenantId} missed elevator ${elevatorIndex+1} or got impatient (after 3 minutes)`);
-            }
-          }, 180000 / simulator.config.simulationSpeed); // Increased to 3 minutes
+          // Store tenant in simulator for tracking
+          if (!simulator.tenants) {
+            simulator.tenants = [];
+          }
+          simulator.tenants.push(tenant);
         }
       });
     }

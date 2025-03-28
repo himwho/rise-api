@@ -242,11 +242,16 @@ class AsciiVisualizer {
       let floorLine = `${floor.toString().padStart(2)} |`;
       
       // Add waiting tenants on the left
-      const waitingTenants = this.state.tenants.filter(t => 
-        t.currentFloor === floor && t.status === 'WAITING'
-      );
+      const waitingTenants = this.simulator.tenants ? 
+        this.simulator.tenants.filter(t => 
+          t.state.currentFloor === floor && t.state.status === 'WAITING'
+        ) : [];
       
-      floorLine += waitingTenants.map(t => 'T').join('') + ' '.repeat(5 - waitingTenants.length);
+      // Fix: Ensure we don't try to repeat with a negative value
+      const tenantCount = Math.min(waitingTenants.length, 5); // Cap at 5 tenants shown
+      const spacesNeeded = Math.max(0, 5 - tenantCount); // Ensure non-negative
+      
+      floorLine += waitingTenants.slice(0, 5).map(t => 'T').join('') + ' '.repeat(spacesNeeded);
       
       // Add elevator shafts
       for (let e = 0; e < this.config.elevators; e++) {
@@ -342,7 +347,14 @@ class AsciiVisualizer {
     
     // Add tenant count
     lines.push('');
-    lines.push(`Tenants: ${this.state.tenants.length} total, ${this.state.tenants.filter(t => t.status === 'WAITING').length} waiting`);
+    const waitingTenants = this.simulator.tenants ? 
+      this.simulator.tenants.filter(t => t.state.status === 'WAITING').length : 0;
+    const inElevatorTenants = this.simulator.tenants ? 
+      this.simulator.tenants.filter(t => t.state.status === 'IN_ELEVATOR').length : 0;
+    const exitedTenants = this.simulator.tenants ? 
+      this.simulator.tenants.filter(t => t.state.status === 'EXITED').length : 0;
+    
+    lines.push(`Tenants: ${this.simulator.tenants ? this.simulator.tenants.length : 0} total, ${waitingTenants} waiting, ${inElevatorTenants} in elevator, ${exitedTenants} exited`);
     
     // Print the visualization
     console.log(lines.join('\n'));
@@ -371,7 +383,7 @@ class AsciiVisualizer {
           currentFloor: elevator.state.currentFloor || 1, // Default to floor 1 if null
           doorState: elevator.state.doorState || 'CLOSED',
           direction: elevator.state.direction || 'STATIONARY',
-          requests: new Set(),
+          requests: new Set(elevator.state.floorRequests || []), // Copy floor requests
           occupants: []
         };
       } else {
@@ -384,6 +396,9 @@ class AsciiVisualizer {
         this.state.elevators[index].currentFloor = elevator.state.currentFloor;
         this.state.elevators[index].doorState = elevator.state.doorState;
         this.state.elevators[index].direction = elevator.state.direction;
+        
+        // Update requests from the actual elevator state
+        this.state.elevators[index].requests = new Set(elevator.state.floorRequests || []);
         
         // Update occupants from the actual elevator state
         if (elevator.state.occupants) {
