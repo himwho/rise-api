@@ -61,11 +61,16 @@ class Simulator {
     for (let i = 0; i < this.config.robotCount; i++) {
       const robot = new VirtualRobot({
         name: `Robot-${i+1}`,
-        type: 'cleaner'
+        type: 'cleaner',
+        batteryConsumptionRate: 50, // Increase battery consumption for more visible changes
+        cleaningTimePerFloor: 60000 / this.config.simulationSpeed // 1 minute per floor, adjusted for simulation speed
       });
       
       // Connect robot to first elevator
       robot.connectToElevator(this.elevators[0]);
+      
+      // Initialize battery monitoring
+      robot.startBatteryMonitoring();
       
       this.robots.push(robot);
     }

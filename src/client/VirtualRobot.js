@@ -15,6 +15,7 @@ class VirtualRobot {
       batteryConsumptionRate: 10, // mAh per minute of operation
       chargingRate: 100, // mAh per minute of charging
       chargingFloor: 1, // Floor where the charging station is located
+      cleaningTimePerFloor: 10 * 60 * 1000, // 10 minutes per floor by default
       ...config
     };
 
@@ -23,7 +24,7 @@ class VirtualRobot {
       currentFloor: this.config.startFloor,
       targetFloor: null,
       position: { x: 0, y: 0 }, // Position on current floor
-      status: 'IDLE', // IDLE, WAITING_FOR_ELEVATOR, ENTERING_ELEVATOR, IN_ELEVATOR, EXITING_ELEVATOR, MOVING_TO_DESTINATION, CHARGING
+      status: 'IDLE', // IDLE, WAITING_FOR_ELEVATOR, ENTERING_ELEVATOR, IN_ELEVATOR, EXITING_ELEVATOR, MOVING_TO_DESTINATION, CHARGING, CLEANING
       batteryLevel: this.config.batteryCapacity, // Start with full battery
       batteryPercentage: 100,
       errorState: null,
@@ -268,39 +269,60 @@ class VirtualRobot {
   }
 
   enterElevator() {
-    console.log(`Entering elevator at floor ${this.state.currentFloor}`);
+    if (this.state.status !== 'WAITING_FOR_ELEVATOR') {
+      return;
+    }
+    
+    console.log(`Robot ${this.config.name} entering elevator at floor ${this.state.currentFloor}`);
+    
+    // Update state
     this.state.status = 'ENTERING_ELEVATOR';
     
     // Simulate time to enter elevator
     setTimeout(() => {
       this.state.status = 'IN_ELEVATOR';
-      console.log('Inside elevator, requesting target floor');
       
       // Request target floor
-      this.elevatorConnection.requestFloor(this.state.targetFloor);
-    }, 3000);
+      console.log(`Robot ${this.config.name} requesting elevator to go to floor ${this.state.targetFloor}`);
+      this.elevatorConnection.requestFloor(this.state.targetFloor, 'bot', this.config.name);
+    }, 2000);
   }
 
   exitElevator() {
-    console.log(`Exiting elevator at floor ${this.state.targetFloor}`);
+    if (this.state.status !== 'IN_ELEVATOR') {
+      return;
+    }
+    
+    console.log(`Robot ${this.config.name} exiting elevator at floor ${this.state.targetFloor}`);
+    
+    // Update state
     this.state.status = 'EXITING_ELEVATOR';
     
     // Simulate time to exit elevator
     setTimeout(() => {
+      // Update current floor
       this.state.currentFloor = this.state.targetFloor;
-      this.state.status = 'MOVING_TO_DESTINATION';
       
-      // Simulate moving to final destination on floor
-      setTimeout(() => {
+      // If we were going to a floor to clean, start cleaning
+      if (this.visitedFloors && !this.visitedFloors.has(this.state.currentFloor) && this.state.currentFloor !== this.config.chargingFloor) {
+        console.log(`Robot ${this.config.name} will start cleaning floor ${this.state.currentFloor}`);
+        this.cleanCurrentFloor();
+      } else if (this.state.currentFloor === this.config.chargingFloor && this.state.batteryPercentage < 95) {
+        // If at charging floor and battery is not full, start charging
+        console.log(`Robot ${this.config.name} at charging floor, starting to charge`);
+        this.startCharging();
+      } else {
+        // Otherwise, go to idle state
         this.state.status = 'IDLE';
-        console.log(`Arrived at destination on floor ${this.state.currentFloor}`);
+        console.log(`Robot ${this.config.name} is now idle at floor ${this.state.currentFloor}`);
         
-        if (this.currentTask) {
-          this.currentTask.resolve();
-          this.processNextTask();
+        // If we have more floors to clean, move to the next one
+        if (this.visitedFloors && this.visitedFloors.size < this.elevatorConnection.config.floors) {
+          console.log(`Robot ${this.config.name} has more floors to clean, moving to next floor`);
+          this.moveToNextFloor();
         }
-      }, 3000);
-    }, 3000);
+      }
+    }, 2000);
   }
 
   // Get current state
@@ -447,6 +469,25 @@ class VirtualRobot {
           console.log(`Robot ${this.config.name} battery critically low (${this.state.batteryPercentage}%), returning to charging station`);
           this.returnToChargingStation();
         }
+      } else if (this.state.status === 'CHARGING') {
+        // Charging - increase battery level
+        const chargeAmount = elapsedMinutes * this.config.chargingRate;
+        this.state.batteryLevel = Math.min(this.config.batteryCapacity, this.state.batteryLevel + chargeAmount);
+        
+        // Update battery percentage
+        this.state.batteryPercentage = Math.round((this.state.batteryLevel / this.config.batteryCapacity) * 100);
+        
+        // Log charging progress
+        if (Math.floor(this.state.batteryPercentage / 10) !== Math.floor((this.state.batteryPercentage - chargeAmount) / 10)) {
+          console.log(`Robot ${this.config.name} charging: ${this.state.batteryPercentage}%`);
+        }
+        
+        // If fully charged, go back to cleaning if there are still floors to clean
+        if (this.state.batteryPercentage >= 95 && this.visitedFloors && this.visitedFloors.size < this.elevatorConnection.config.floors) {
+          console.log(`Robot ${this.config.name} fully charged, resuming cleaning`);
+          this.state.status = 'IDLE';
+          this.moveToNextFloor();
+        }
       }
       
       // Update last battery update time
@@ -456,47 +497,70 @@ class VirtualRobot {
 
   // Add a method to start regular battery updates
   startBatteryMonitoring() {
+    // Clear any existing interval
+    if (this.batteryMonitorInterval) {
+      clearInterval(this.batteryMonitorInterval);
+    }
+    
     // Update battery level every 10 seconds
     this.batteryMonitorInterval = setInterval(() => {
       this.updateBatteryLevel();
     }, 10000);
+    
+    console.log(`Robot ${this.config.name} battery monitoring started`);
   }
 
-  // Add a method to return to charging station
+  // Update the returnToChargingStation method to properly handle charging
   returnToChargingStation() {
-    if (this.state.currentFloor === this.config.chargingFloor && this.state.status === 'IDLE') {
-      // Already at charging floor, start charging
+    console.log(`Robot ${this.config.name} returning to charging station on floor ${this.config.chargingFloor}`);
+    
+    // Update status
+    this.state.status = 'RETURNING_TO_CHARGER';
+    this.state.targetFloor = this.config.chargingFloor;
+    
+    // If already at charging floor, start charging
+    if (this.state.currentFloor === this.config.chargingFloor) {
       this.startCharging();
-      return Promise.resolve();
+      return;
     }
     
-    // Go to charging floor
-    console.log(`Robot ${this.config.name} returning to charging station on floor ${this.config.chargingFloor}`);
-    return this.goToFloor(this.config.chargingFloor)
-      .then(() => {
-        this.startCharging();
-      })
-      .catch(err => {
-        console.error(`Error returning to charging station:`, err);
-      });
+    // Request elevator to go to charging floor
+    this.requestElevator(this.config.chargingFloor);
   }
 
-  // Add a method to start charging
+  // Fix the startCharging method to properly handle charging completion
   startCharging() {
-    console.log(`Robot ${this.config.name} started charging`);
+    console.log(`Robot ${this.config.name} started charging at floor ${this.config.chargingFloor}`);
+    
+    // Update status
     this.state.status = 'CHARGING';
     
-    // Calculate time needed to fully charge
-    const remainingCapacity = this.config.batteryCapacity - this.state.batteryLevel;
-    const minutesToFullCharge = remainingCapacity / this.config.chargingRate;
+    // Update battery level immediately
+    this.updateBatteryLevel();
     
-    // Set a timer to finish charging
-    setTimeout(() => {
-      this.state.batteryLevel = this.config.batteryCapacity;
-      this.state.batteryPercentage = 100;
-      this.state.status = 'IDLE';
-      console.log(`Robot ${this.config.name} finished charging, battery at 100%`);
-    }, minutesToFullCharge * 60000);
+    // Check battery level periodically
+    this.chargingInterval = setInterval(() => {
+      // Update battery level
+      this.updateBatteryLevel();
+      
+      // If fully charged, resume cleaning
+      if (this.state.batteryPercentage >= 95) {
+        console.log(`Robot ${this.config.name} fully charged (${this.state.batteryPercentage}%), resuming cleaning`);
+        
+        // Clear charging interval
+        clearInterval(this.chargingInterval);
+        
+        // If we have more floors to clean, move to the next one
+        if (this.visitedFloors && this.visitedFloors.size < this.elevatorConnection.config.floors) {
+          console.log(`Robot ${this.config.name} has more floors to clean, moving to next floor`);
+          this.state.status = 'IDLE';
+          this.moveToNextFloor();
+        } else {
+          console.log(`Robot ${this.config.name} has cleaned all floors, staying at charging station`);
+          this.state.status = 'IDLE';
+        }
+      }
+    }, 10000); // Check every 10 seconds
   }
 
   // Add a method to check if the robot can complete a task with current battery
@@ -518,6 +582,153 @@ class VirtualRobot {
     
     // Check if we have enough battery
     return this.state.batteryLevel >= totalBatteryNeeded;
+  }
+
+  // Fix the startCleaning method to properly initialize cleaning
+  startCleaning() {
+    if (this.state.status !== 'IDLE' && this.state.status !== 'CHARGING') {
+      console.log(`Robot ${this.config.name} is already busy with status ${this.state.status}`);
+      return false;
+    }
+    
+    console.log(`Robot ${this.config.name} starting cleaning operation`);
+    
+    // Initialize visited floors set if not already done
+    if (!this.visitedFloors) {
+      this.visitedFloors = new Set();
+    }
+    
+    // Ensure battery monitoring is active
+    this.startBatteryMonitoring();
+    
+    // Start with the current floor
+    this.cleanCurrentFloor();
+    
+    return true;
+  }
+
+  // Fix the cleanCurrentFloor method to properly handle completion
+  cleanCurrentFloor() {
+    const currentFloor = this.state.currentFloor;
+    
+    // Update status to cleaning
+    this.state.status = 'CLEANING';
+    console.log(`Robot ${this.config.name} cleaning floor ${currentFloor} (status: ${this.state.status})`);
+    
+    // Mark this floor as visited
+    if (!this.visitedFloors) {
+      this.visitedFloors = new Set();
+    }
+    this.visitedFloors.add(currentFloor);
+    
+    // Update battery level
+    this.updateBatteryLevel();
+    
+    // Set a timer for the cleaning duration
+    setTimeout(() => {
+      console.log(`Robot ${this.config.name} finished cleaning floor ${currentFloor}`);
+      
+      // Update battery level again after cleaning
+      this.updateBatteryLevel();
+      
+      // Check if battery is too low to continue
+      if (this.state.batteryPercentage < 20) {
+        console.log(`Robot ${this.config.name} battery low (${this.state.batteryPercentage}%), returning to charging station`);
+        this.returnToChargingStation();
+        return;
+      }
+      
+      // Move to next floor
+      this.moveToNextFloor();
+    }, this.config.cleaningTimePerFloor || 60000); // Default to 1 minute if not specified
+  }
+
+  // Fix the moveToNextFloor method to properly handle floor transitions
+  moveToNextFloor() {
+    // Find a floor that hasn't been cleaned yet
+    const uncleanedFloors = [];
+    for (let i = 1; i <= this.elevatorConnection.config.floors; i++) {
+      if (!this.visitedFloors.has(i)) {
+        uncleanedFloors.push(i);
+      }
+    }
+    
+    // If all floors have been cleaned, return to charging station
+    if (uncleanedFloors.length === 0) {
+      console.log(`Robot ${this.config.name} has cleaned all floors, returning to charging station`);
+      this.returnToChargingStation();
+      return;
+    }
+    
+    // Choose the next floor (closest one that hasn't been cleaned)
+    let nextFloor = uncleanedFloors[0];
+    let minDistance = Math.abs(nextFloor - this.state.currentFloor);
+    
+    for (const floor of uncleanedFloors) {
+      const distance = Math.abs(floor - this.state.currentFloor);
+      if (distance < minDistance) {
+        minDistance = distance;
+        nextFloor = floor;
+      }
+    }
+    
+    console.log(`Robot ${this.config.name} moving to next floor: ${nextFloor}`);
+    
+    // Update status
+    this.state.status = 'WAITING_FOR_ELEVATOR';
+    this.state.targetFloor = nextFloor;
+    
+    // Request elevator
+    this.requestElevator(nextFloor);
+  }
+
+  // Fix the requestElevator method to properly handle elevator requests
+  requestElevator(targetFloor) {
+    if (!this.elevatorConnection) {
+      console.error('No elevator connection');
+      return;
+    }
+    
+    console.log(`Robot ${this.config.name} requesting elevator to floor ${targetFloor}`);
+    
+    // Update state
+    this.state.status = 'WAITING_FOR_ELEVATOR';
+    this.state.targetFloor = targetFloor;
+    
+    // Request elevator to current floor
+    this.elevatorConnection.requestFloor(this.state.currentFloor, 'bot', this.config.name);
+    
+    // Set up listeners if not already set up
+    if (!this.doorStateListener) {
+      this.doorStateListener = (doorState) => {
+        if (doorState === 'OPEN' && 
+            this.elevatorConnection.state.currentFloor === this.state.currentFloor && 
+            this.state.status === 'WAITING_FOR_ELEVATOR') {
+          // Enter elevator
+          this.enterElevator();
+        } else if (doorState === 'OPEN' && 
+                   this.elevatorConnection.state.currentFloor === this.state.targetFloor && 
+                   this.state.status === 'IN_ELEVATOR') {
+          // Exit elevator
+          this.exitElevator();
+        }
+      };
+      
+      this.elevatorConnection.addEventListener('doorStateChanged', this.doorStateListener);
+    }
+  }
+
+  // Add a debug method to log robot state
+  debugState() {
+    console.log(`\n=== Robot ${this.config.name} Debug State ===`);
+    console.log(`Current Floor: ${this.state.currentFloor}`);
+    console.log(`Target Floor: ${this.state.targetFloor}`);
+    console.log(`Status: ${this.state.status}`);
+    console.log(`Battery Level: ${this.state.batteryLevel} mAh (${this.state.batteryPercentage}%)`);
+    console.log(`Last Battery Update: ${new Date(this.state.lastBatteryUpdateTime).toISOString()}`);
+    console.log(`Visited Floors: ${this.visitedFloors ? Array.from(this.visitedFloors).join(', ') : 'None'}`);
+    console.log(`Connected to Elevator: ${this.elevatorConnection ? this.elevatorConnection.config.id : 'None'}`);
+    console.log('===================================\n');
   }
 }
 

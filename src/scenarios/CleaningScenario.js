@@ -373,6 +373,36 @@ class CleaningScenario {
     
     return steps;
   }
+
+  generateRobotSteps() {
+    const steps = [];
+    
+    // Start robots cleaning at staggered times
+    for (let i = 0; i < this.config.bots; i++) {
+      // Start each robot at a different time (staggered by 5 minutes)
+      const startTime = i * 5 * 60 * 1000; // 5 minutes in milliseconds
+      
+      steps.push({
+        time: startTime,
+        description: `Robot ${i+1} starts cleaning operation`,
+        action: (simulator) => {
+          const robot = simulator.robots[i];
+          
+          // Configure robot for cleaning
+          robot.config.cleaningTimePerFloor = this.config.cleaningTimePerFloor / simulator.config.simulationSpeed;
+          
+          // Initialize visited floors set
+          robot.visitedFloors = new Set();
+          
+          // Start cleaning
+          console.log(`Robot ${robot.config.name} starting cleaning operation`);
+          robot.startCleaning();
+        }
+      });
+    }
+    
+    return steps;
+  }
 }
 
 module.exports = CleaningScenario; 
